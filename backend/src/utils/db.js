@@ -303,15 +303,24 @@ async function queryOne(sql, params = []) {
 }
 
 async function transaction(callback) {
-  const txn = db.transaction((fn) => fn());
-  // callback conn kutadi — SQLite da connection yo'q, db ni beramiz
+  // SQLite transactionlar sinxron ishlaydi, lekin controllerlarimiz async/await ishlatadi.
+  // Shu sabab BEGIN/COMMIT/ROLLBACK ni qo'lda boshqaramiz.
   const fakeConn = {
     execute: async (sql, params) => {
       const res = await query(sql, params);
       return [res];
     },
   };
-  return txn(() => callback(fakeConn));
+
+  db.exec('BEGIN');
+  try {
+    const result = await callback(fakeConn);
+    db.exec('COMMIT');
+    return result;
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch (_) {}
+    throw err;
+  }
 }
 
 // MySQL placeholder ? → SQLite ? (ular bir xil aslida)
