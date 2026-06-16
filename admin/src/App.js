@@ -6,6 +6,12 @@ import axios from 'axios';
 const BASE = process.env.REACT_APP_API_URL || '/api';
 const api = axios.create({ baseURL: BASE, timeout: 15000 });
 api.interceptors.request.use(cfg => {
+  const adminHeaders = getBrowserAdminHeaders();
+  if (Object.keys(adminHeaders).length > 0) {
+    Object.assign(cfg.headers, adminHeaders);
+    return cfg;
+  }
+
   const token = syncAdminInitData();
   if (token) cfg.headers['X-Init-Data'] = token;
   return cfg;
@@ -28,6 +34,25 @@ const ADMIN_USERNAMES = new Set(
     .filter(Boolean)
 );
 
+const PRIMARY_ADMIN_ID = Array.from(ADMIN_IDS)[0] || null;
+const PRIMARY_ADMIN_USERNAME =
+  String(process.env.REACT_APP_ADMIN_USERNAME || process.env.REACT_APP_ADMIN_USERNAMES || '')
+    .split(',')
+    .map(v => v.trim())
+    .filter(Boolean)[0] || 'admin';
+
+function hasBrowserAdminAccess() {
+  return PRIMARY_ADMIN_ID !== null;
+}
+
+function getBrowserAdminHeaders() {
+  if (!hasBrowserAdminAccess()) return {};
+  return {
+    'X-Admin-Id': String(PRIMARY_ADMIN_ID),
+    'X-Admin-Username': PRIMARY_ADMIN_USERNAME,
+  };
+}
+
 function getTelegramWebApp() {
   try {
     return window.Telegram?.WebApp || null;
@@ -37,6 +62,7 @@ function getTelegramWebApp() {
 }
 
 function syncAdminInitData() {
+  if (hasBrowserAdminAccess()) return '';
   try {
     const tg = getTelegramWebApp();
     const initData = tg?.initData || '';
@@ -1011,84 +1037,15 @@ function Logs() {
 
 // ========== LOGIN ==========
 function Login() {
-  const [initData, setInitData] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [telegramUser, setTelegramUser] = useState(null);
-
-  useEffect(() => {
-    const tg = getTelegramWebApp();
-    const currentUser = tg?.initDataUnsafe?.user || null;
-    setTelegramUser(currentUser);
-
-    const stored = syncAdminInitData();
-    setInitData(stored);
-
-    if (currentUser && !isAllowedAdminUser(currentUser)) {
-      setError('This Telegram account is not allowed to access admin.');
-      return;
-    }
-
-    if (stored) {
-      handleLogin(stored);
-    }
-  }, []);
-
-  async function handleLogin(providedInitData) {
-    const data = String(providedInitData ?? initData ?? '').trim();
-    if (!data) { setError('Enter your Telegram initData'); return; }
-    if (telegramUser && !isAllowedAdminUser(telegramUser)) {
-      setError('This Telegram account is not allowed to access admin.');
-      return;
-    }
-    setLoading(true);
-    try {
-      localStorage.setItem('admin_init_data', data);
-      await api.get('/admin/dashboard');
-      window.location.reload();
-    } catch (e) {
-      localStorage.removeItem('admin_init_data');
-      setError('Invalid credentials or not an admin');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  const tg = getTelegramWebApp();
-  const detectedUser = telegramUser || tg?.initDataUnsafe?.user || null;
-
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: 20 }}>
-      <div style={{ background: '#161621', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 20, padding: 32, width: '100%', maxWidth: 400 }}>
-        <div style={{ textAlign: 'center', marginBottom: 28 }}>
-          <div style={{ fontSize: 48, marginBottom: 10 }}>🎁</div>
-          <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>TmuxCase Admin</div>
-          <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)' }}>Telegram initData orqali kirish</div>
-        </div>
-        <Alert msg={error} type="error" />
-        {detectedUser && (
-          <div style={{ marginBottom: 16, padding: 12, borderRadius: 12, background: 'rgba(79,142,247,0.08)', border: '1px solid rgba(79,142,247,0.18)', fontSize: 13, lineHeight: 1.5 }}>
-            <div><strong>User ID:</strong> {detectedUser.id}</div>
-            <div><strong>Username:</strong> @{detectedUser.username || 'no username'}</div>
-          </div>
-        )}
-        <div className="form-group">
-          <label className="form-label">Telegram InitData</label>
-          <textarea
-            className="form-input"
-            rows={4}
-            placeholder="query_id=...&user=...&auth_date=...&hash=..."
-            value={initData}
-            onChange={e => setInitData(e.target.value)}
-            style={{ resize: 'none', fontFamily: 'monospace', fontSize: 11 }}
-          />
-        </div>
-        <button className="btn btn-primary w-full" onClick={() => handleLogin()} disabled={loading}>
-          {loading ? 'Checking...' : 'Login →'}
-        </button>
-        <div style={{ marginTop: 16, fontSize: 12, color: 'rgba(255,255,255,0.3)', textAlign: 'center', lineHeight: 1.6 }}>
-          Telegram ichida ochilganda initData avtomatik olinadi.<br/>
-          Ruxsat faqat ADMIN_IDS ga mos bo‘lsa beriladi.
+      <div style={{ background: '#161621', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 20, padding: 32, width: '100%', maxWidth: 420, textAlign: 'center' }}>
+        <div style={{ fontSize: 48, marginBottom: 10 }}>🎁</div>
+        <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 8 }}>TmuxCase Admin</div>
+        <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', lineHeight: 1.6 }}>
+          Admin access is configured from environment variables.
+          <br />
+          Telegram initData is not required for browser admin mode.
         </div>
       </div>
     </div>
@@ -1150,27 +1107,44 @@ function PageWrapper({ title, children }) {
 
 // ========== APP ==========
 export default function App() {
-  try {
-    const tg = getTelegramWebApp();
-    if (tg?.initData && tg.initData.length > 0) {
-      localStorage.setItem('admin_init_data', tg.initData);
-      tg.ready();
-      tg.expand();
-    }
-  } catch (e) {}
-
-  const [authed, setAuthed] = useState(!!syncAdminInitData());
+  const browserAdminMode = hasBrowserAdminAccess();
+  const [authed, setAuthed] = useState(browserAdminMode || !!syncAdminInitData());
+  const [authChecked, setAuthChecked] = useState(browserAdminMode);
 
   useEffect(() => {
+    if (browserAdminMode) {
+      localStorage.removeItem('admin_init_data');
+    }
+
     const check = async () => {
-      if (!syncAdminInitData()) { setAuthed(false); return; }
       try {
+        const token = syncAdminInitData();
+        if (!token && !browserAdminMode) {
+          setAuthed(false);
+          setAuthChecked(true);
+          return;
+        }
+
         await api.get('/admin/dashboard');
         setAuthed(true);
-      } catch { localStorage.removeItem('admin_init_data'); setAuthed(false); }
+      } catch {
+        setAuthed(false);
+      } finally {
+        setAuthChecked(true);
+      }
     };
+
     check();
-  }, []);
+  }, [browserAdminMode]);
+
+  if (!authChecked) {
+    return (
+      <>
+        <style>{styles}</style>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: 'rgba(255,255,255,0.6)' }}>Loading admin...</div>
+      </>
+    );
+  }
 
   if (!authed) return (
     <>
