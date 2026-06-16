@@ -1,0 +1,214 @@
+import React, { useEffect, useRef, useState } from 'react';
+import confetti from 'canvas-confetti';
+
+const RARITY_COLORS = {
+  common: '#6b7280',
+  rare: '#3b82f6',
+  epic: '#8b5cf6',
+  legendary: '#f59e0b',
+};
+
+function RewardDisplay({ reward, size = 'normal' }) {
+  const isLarge = size === 'large';
+  const fontSize = isLarge ? '80px' : '44px';
+  const imgSize = isLarge ? '110px' : '70px';
+
+  if (reward.reward_type === 'gift' && reward.gift_emoji) {
+    return <span style={{ fontSize, lineHeight: 1 }}>{reward.gift_emoji}</span>;
+  }
+  if (reward.image_url) {
+    return (
+      <img
+        src={reward.image_url}
+        alt={reward.name}
+        style={{ width: imgSize, height: imgSize, objectFit: 'contain' }}
+      />
+    );
+  }
+  if (reward.reward_type === 'stars') {
+    return <span style={{ fontSize, lineHeight: 1 }}>⭐</span>;
+  }
+  return <span style={{ fontSize, lineHeight: 1 }}>🎁</span>;
+}
+
+export default function CaseOpenAnimation({ caseData, result, onClose }) {
+  const trackRef = useRef(null);
+  const [phase, setPhase] = useState('spinning'); // spinning | result
+  const [winnerIndex] = useState(23); // position 24 in 0-indexed
+
+  const animationRewards = result.animation_rewards || [];
+
+  useEffect(() => {
+    // Start spinning animation after mount
+    const ITEM_WIDTH = 140; // item width + gap
+    const containerWidth = window.innerWidth;
+    const centerOffset = containerWidth / 2 - ITEM_WIDTH / 2;
+    const targetX = -(winnerIndex * ITEM_WIDTH - centerOffset);
+
+    requestAnimationFrame(() => {
+      if (trackRef.current) {
+        trackRef.current.style.transition = 'none';
+        trackRef.current.style.transform = 'translateX(0)';
+
+        requestAnimationFrame(() => {
+          if (trackRef.current) {
+            trackRef.current.style.transition = 'transform 5.5s cubic-bezier(0.12, 0.95, 0.30, 1.0)';
+            trackRef.current.style.transform = `translateX(${targetX}px)`;
+          }
+        });
+      }
+    });
+
+    const timer = setTimeout(() => {
+      setPhase('result');
+
+      // Fire confetti for wins
+      if (result.won) {
+        const color = RARITY_COLORS[result.reward?.rarity] || '#f59e0b';
+        confetti({
+          particleCount: 120,
+          spread: 80,
+          origin: { y: 0.5 },
+          colors: [color, '#ffffff', '#f59e0b'],
+          gravity: 0.8,
+          scalar: 1.1,
+        });
+        setTimeout(() => {
+          confetti({
+            particleCount: 60,
+            spread: 50,
+            origin: { y: 0.4, x: 0.2 },
+            colors: [color, '#ffffff'],
+          });
+          confetti({
+            particleCount: 60,
+            spread: 50,
+            origin: { y: 0.4, x: 0.8 },
+            colors: [color, '#ffffff'],
+          });
+        }, 300);
+      }
+    }, 5800);
+
+    return () => clearTimeout(timer);
+  }, []);
+
+  const reward = result.reward;
+  const rarityColor = RARITY_COLORS[reward?.rarity] || '#6b7280';
+
+  return (
+    <div className="case-open-overlay">
+      {phase === 'spinning' && (
+        <>
+          <div style={{ marginBottom: 24, textAlign: 'center' }}>
+            <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 1 }}>
+              Opening
+            </div>
+            <div style={{ fontSize: 20, fontWeight: 800 }}>{caseData?.name}</div>
+          </div>
+
+          <div className="reel-container">
+            <div className="reel-pointer" />
+            <div
+              className="reel-track"
+              ref={trackRef}
+              style={{ transform: 'translateX(0)' }}
+            >
+              {animationRewards.map((item, i) => (
+                <div
+                  key={i}
+                  className={`reel-item ${i === winnerIndex ? 'is-winner' : ''}`}
+                  style={{
+                    borderColor: i === winnerIndex ? RARITY_COLORS[item.rarity] : undefined,
+                    background: i === winnerIndex
+                      ? `rgba(${hexToRgb(RARITY_COLORS[item.rarity])}, 0.15)`
+                      : undefined,
+                  }}
+                >
+                  <RewardDisplay reward={item} />
+                  <span className="reel-item-name">{item.name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 32, color: 'rgba(255,255,255,0.3)', fontSize: 13, fontWeight: 500 }}>
+            Good luck! 🍀
+          </div>
+        </>
+      )}
+
+      {phase === 'result' && (
+        <div className="result-popup">
+          <div className="modal-handle" />
+
+          {result.won ? (
+            <>
+              <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.5)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 12 }}>
+                You Won!
+              </div>
+
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  marginBottom: 16,
+                  padding: 20,
+                  borderRadius: 18,
+                  background: `rgba(${hexToRgb(rarityColor)}, 0.1)`,
+                  border: `2px solid rgba(${hexToRgb(rarityColor)}, 0.4)`,
+                  boxShadow: `0 0 40px rgba(${hexToRgb(rarityColor)}, 0.3)`,
+                }}
+              >
+                <RewardDisplay reward={reward} size="large" />
+              </div>
+
+              <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 6 }}>{reward?.name}</div>
+
+              {reward?.rarity && (
+                <div className={`rarity-badge ${reward.rarity}`} style={{ marginBottom: 8, display: 'inline-flex' }}>
+                  {reward.rarity}
+                </div>
+              )}
+
+              {reward?.reward_type === 'stars' && (
+                <div style={{ fontSize: 24, fontWeight: 900, color: '#f59e0b', marginBottom: 4 }}>
+                  +{reward.stars_amount} ⭐
+                </div>
+              )}
+
+              {(reward?.reward_type === 'gift' || reward?.reward_type === 'nft') && reward?.value && (
+                <div style={{ fontSize: 15, color: 'rgba(255,255,255,0.5)', marginBottom: 4 }}>
+                  Value: {reward.value} ⭐
+                </div>
+              )}
+
+              <div style={{ height: 16 }} />
+              <button className="btn btn-primary" onClick={onClose}>
+                🎉 Awesome!
+              </button>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 56, marginBottom: 12 }}>😔</div>
+              <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 8 }}>Better luck next time!</div>
+              <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.4)', marginBottom: 20 }}>
+                Don't give up — your next spin could be legendary!
+              </div>
+              <button className="btn btn-secondary" onClick={onClose}>
+                Try Again
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function hexToRgb(hex) {
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!result) return '255,255,255';
+  return `${parseInt(result[1], 16)},${parseInt(result[2], 16)},${parseInt(result[3], 16)}`;
+}

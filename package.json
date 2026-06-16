@@ -1,0 +1,16 @@
+{
+  "name": "tmuxcasebot",
+  "version": "1.0.0",
+  "description": "TmuxCaseBot — Telegram Mini App (Backend + Frontend + Admin)",
+  "scripts": {
+    "install:all": "npm install --prefix backend && npm install --prefix frontend && npm install --prefix admin",
+    "start": "concurrently --names \"BACKEND,FRONTEND,ADMIN\" --prefix-colors \"cyan,green,yellow\" \"npm start --prefix backend\" \"npm start --prefix frontend\" \"npm start --prefix admin\"",
+    "start:backend": "npm start --prefix backend",
+    "start:frontend": "npm start --prefix frontend",
+    "start:admin": "npm start --prefix admin",
+    "dev": "npm run start:backend"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

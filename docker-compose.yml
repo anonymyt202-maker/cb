@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASS}
+      MYSQL_DATABASE: tmuxcasebot
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASS}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: always
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_NAME=tmuxcasebot
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - BOT_TOKEN=${BOT_TOKEN}
+      - BOT_USERNAME=${BOT_USERNAME}
+      - ADMIN_IDS=${ADMIN_IDS}
+      - JWT_SECRET=${JWT_SECRET}
+      - WEBAPP_URL=${WEBAPP_URL}
+      - ADMIN_URL=${ADMIN_URL}
+      - WEBHOOK_URL=${WEBHOOK_URL}
+    ports:
+      - "3001:3001"
+    volumes:
+      - uploads:/app/uploads
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        - REACT_APP_API_URL=/api
+        - REACT_APP_TON_WALLET=${TON_WALLET_ADDRESS}
+    restart: always
+    ports:
+      - "3000:80"
+
+  admin:
+    build:
+      context: ./admin
+      args:
+        - REACT_APP_API_URL=/api
+    restart: always
+    ports:
+      - "3002:80"
+
+volumes:
+  mysql_data:
+  uploads:
