@@ -48,6 +48,88 @@ function ensureInventoryId(insertResult, fallbackId = null) {
   return id != null ? id : fallbackId;
 }
 
+function isProbablyUrl(value) {
+  if (typeof value !== 'string') return false;
+  const text = value.trim().toLowerCase();
+  if (!text) return false;
+  return (
+    text.startsWith('http://') ||
+    text.startsWith('https://') ||
+    text.startsWith('//') ||
+    text.startsWith('data:') ||
+    text.includes('t.me/') ||
+    text.includes('telegram.me/') ||
+    text.includes('telegram.org/')
+  );
+}
+
+function normalizeMediaUrl(value) {
+  if (!value || typeof value !== 'string') return '';
+  const raw = value.trim();
+  if (!raw) return '';
+
+  if (
+    raw.startsWith('http://') ||
+    raw.startsWith('https://') ||
+    raw.startsWith('data:') ||
+    raw.startsWith('blob:') ||
+    raw.startsWith('file:')
+  ) {
+    return raw;
+  }
+
+  if (raw.startsWith('/uploads/')) return raw;
+  if (raw.startsWith('uploads/')) return `/${raw}`;
+  if (raw.startsWith('/public/uploads/')) return raw.replace('/public', '');
+  if (raw.startsWith('public/uploads/')) return `/${raw.replace(/^public\//, '')}`;
+
+  if (/^[\w.-]+\.(png|jpe?g|webp|gif|svg|mp4|mov|webm)$/i.test(raw)) {
+    return `/uploads/${raw}`;
+  }
+
+  return raw;
+}
+
+function cleanDisplayName(reward) {
+  const original = typeof reward?.name === 'string' ? reward.name.trim() : '';
+  if (!original) {
+    if (reward?.reward_type === 'stars') return 'Telegram Stars';
+    if (reward?.gift_emoji) return reward.gift_emoji;
+    return 'Reward';
+  }
+
+  if (isProbablyUrl(original)) {
+    if (reward?.reward_type === 'stars') return 'Telegram Stars';
+    if (reward?.gift_emoji) return `${reward.gift_emoji} Telegram Gift`;
+    if (reward?.reward_type === 'gift') return 'Telegram Gift';
+    if (reward?.reward_type === 'nft') return 'NFT Reward';
+    return 'Reward';
+  }
+
+  return original;
+}
+
+function prepareCaseForClient(caseData) {
+  if (!caseData) return caseData;
+  return {
+    ...caseData,
+    image_url: normalizeMediaUrl(caseData.image_url),
+  };
+}
+
+function prepareRewardForClient(reward) {
+  if (!reward) return reward;
+  return {
+    ...reward,
+    name: cleanDisplayName(reward),
+    image_url: normalizeMediaUrl(reward.image_url),
+  };
+}
+
+function prepareRewardsForClient(rewards = []) {
+  return rewards.map(prepareRewardForClient);
+}
+
 // Get all active cases
 async function getCases(req, res) {
   try {
@@ -58,7 +140,7 @@ async function getCases(req, res) {
        WHERE c.is_active = 1 
        ORDER BY c.sort_order ASC, c.id ASC`
     );
-    res.json({ cases });
+    res.json({ cases: cases.map(prepareCaseForClient) });
   } catch (err) {
     console.error('getCases error:', err);
     res.status(500).json({ error: 'Failed to load cases' });
@@ -69,7 +151,7 @@ async function getCases(req, res) {
 async function getCaseById(req, res) {
   try {
     const { id } = req.params;
-    const caseData = await queryOne(`SELECT * FROM cases WHERE id = ? AND is_active = 1`, [id]);
+    const caseData = prepareCaseForClient(await queryOne(`SELECT * FROM cases WHERE id = ? AND is_active = 1`, [id]));
     if (!caseData) return res.status(404).json({ error: 'Case not found' });
 
     const rewards = await query(
@@ -77,7 +159,7 @@ async function getCaseById(req, res) {
       [id]
     );
 
-    res.json({ case: caseData, rewards });
+    res.json({ case: caseData, rewards: prepareRewardsForClient(rewards) });
   } catch (err) {
     console.error('getCaseById error:', err);
     res.status(500).json({ error: 'Failed to load case' });
@@ -90,9 +172,9 @@ async function openCase(req, res) {
     const { id } = req.params;
     const userId = req.user.id;
 
-    const caseData = await queryOne(
+    const caseData = prepareCaseForClient(await queryOne(
       `SELECT * FROM cases WHERE id = ? AND is_active = 1`, [id]
-    );
+    ));
     if (!caseData) return res.status(404).json({ error: 'Case not found' });
 
     if (caseData.case_type === 'daily_free') {
@@ -102,9 +184,9 @@ async function openCase(req, res) {
       return await openReferralCase(req, res, caseData);
     }
 
-    const rewards = await query(
+    const rewards = prepareRewardsForClient(await query(
       `SELECT * FROM case_rewards WHERE case_id = ? AND is_active = 1`, [id]
-    );
+    ));
     if (!rewards.length) return res.status(400).json({ error: 'No rewards in this case' });
 
     const balance = await queryOne(
@@ -120,7 +202,7 @@ async function openCase(req, res) {
       const winRoll = crypto.randomInt(0, 10000);
       const winChance = parseFloat(caseData.win_chance) * 100;
       if (winRoll < winChance) {
-        selectedReward = rewards[0];
+        selectedReward = prepareRewardForClient(rewards[0]);
       } else {
         await transaction(async (conn) => {
           await conn.execute(
@@ -140,7 +222,7 @@ async function openCase(req, res) {
         return res.json({ won: false, message: 'Better luck next time!' });
       }
     } else {
-      selectedReward = selectReward(rewards);
+      selectedReward = prepareRewardForClient(selectReward(rewards));
     }
 
     const result = await transaction(async (conn) => {
@@ -193,7 +275,7 @@ async function openCase(req, res) {
         [userId, id, selectedReward.id, inventoryId, caseData.price]
       );
 
-      return { selectedReward, inventoryId, balanceAfter };
+      return { selectedReward: prepareRewardForClient(selectedReward), inventoryId, balanceAfter };
     });
 
     res.json({
@@ -201,7 +283,7 @@ async function openCase(req, res) {
       reward: result.selectedReward,
       inventory_id: result.inventoryId,
       new_balance: result.balanceAfter,
-      animation_rewards: shuffleRewardsForAnimation(rewards, selectedReward),
+      animation_rewards: shuffleRewardsForAnimation(rewards, prepareRewardForClient(selectedReward)),
     });
   } catch (err) {
     console.error('openCase error:', err);
@@ -246,12 +328,12 @@ async function openDailyFreeCase(req, res, caseData) {
     });
   }
 
-  const rewards = await query(
+  const rewards = prepareRewardsForClient(await query(
     `SELECT * FROM case_rewards WHERE case_id = ? AND is_active = 1`, [caseData.id]
-  );
+  ));
   if (!rewards.length) return res.status(400).json({ error: 'No rewards in this case' });
 
-  const selectedReward = selectReward(rewards);
+  const selectedReward = prepareRewardForClient(selectReward(rewards));
 
   const result = await transaction(async (conn) => {
     await conn.execute(
@@ -292,14 +374,14 @@ async function openDailyFreeCase(req, res, caseData) {
       [userId, caseData.id, selectedReward.id, inventoryId]
     );
 
-    return { selectedReward, inventoryId };
+    return { selectedReward: prepareRewardForClient(selectedReward), inventoryId };
   });
 
   res.json({
     won: true,
     reward: result.selectedReward,
     inventory_id: result.inventoryId,
-    animation_rewards: shuffleRewardsForAnimation(rewards, selectedReward),
+    animation_rewards: shuffleRewardsForAnimation(rewards, prepareRewardForClient(selectedReward)),
   });
 }
 
@@ -335,12 +417,12 @@ async function openReferralCase(req, res, caseData) {
     });
   }
 
-  const rewards = await query(
+  const rewards = prepareRewardsForClient(await query(
     `SELECT * FROM case_rewards WHERE case_id = ? AND is_active = 1`, [caseData.id]
-  );
+  ));
   if (!rewards.length) return res.status(400).json({ error: 'No rewards in this case' });
 
-  const selectedReward = selectReward(rewards);
+  const selectedReward = prepareRewardForClient(selectReward(rewards));
 
   const result = await transaction(async (conn) => {
     await conn.execute(
@@ -381,14 +463,14 @@ async function openReferralCase(req, res, caseData) {
       [userId, caseData.id, selectedReward.id, inventoryId]
     );
 
-    return { selectedReward, inventoryId };
+    return { selectedReward: prepareRewardForClient(selectedReward), inventoryId };
   });
 
   res.json({
     won: true,
     reward: result.selectedReward,
     inventory_id: result.inventoryId,
-    animation_rewards: shuffleRewardsForAnimation(rewards, selectedReward),
+    animation_rewards: shuffleRewardsForAnimation(rewards, prepareRewardForClient(selectedReward)),
   });
 }
 
