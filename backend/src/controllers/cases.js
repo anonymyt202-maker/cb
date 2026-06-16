@@ -1,6 +1,53 @@
 const { query, queryOne, transaction } = require('../utils/db');
 const crypto = require('crypto');
 
+function selectReward(rewards) {
+  const totalChance = rewards.reduce((sum, r) => sum + parseFloat(r.chance), 0);
+  const random = (crypto.randomInt(0, 1000000) / 1000000) * totalChance;
+
+  let cumulative = 0;
+  for (const reward of rewards) {
+    cumulative += parseFloat(reward.chance);
+    if (random <= cumulative) return reward;
+  }
+  return rewards[rewards.length - 1];
+}
+
+function shuffleRewardsForAnimation(rewards, winner) {
+  const pool = [];
+  for (let i = 0; i < 30; i++) {
+    pool.push(rewards[Math.floor(Math.random() * rewards.length)]);
+  }
+  pool[23] = winner;
+  return pool;
+}
+
+function extractInsertId(result) {
+  if (result == null) return null;
+  if (typeof result === 'number') return result;
+
+  if (Array.isArray(result)) {
+    for (const item of result) {
+      const id = extractInsertId(item);
+      if (id != null) return id;
+    }
+    return null;
+  }
+
+  if (typeof result === 'object') {
+    if (result.insertId != null) return result.insertId;
+    if (result.lastInsertRowid != null) return result.lastInsertRowid;
+    if (result[0] != null) return extractInsertId(result[0]);
+  }
+
+  return null;
+}
+
+function ensureInventoryId(insertResult, fallbackId = null) {
+  const id = extractInsertId(insertResult);
+  return id != null ? id : fallbackId;
+}
+
 // Get all active cases
 async function getCases(req, res) {
   try {
@@ -22,9 +69,7 @@ async function getCases(req, res) {
 async function getCaseById(req, res) {
   try {
     const { id } = req.params;
-    const caseData = await queryOne(
-      `SELECT * FROM cases WHERE id = ? AND is_active = 1`, [id]
-    );
+    const caseData = await queryOne(`SELECT * FROM cases WHERE id = ? AND is_active = 1`, [id]);
     if (!caseData) return res.status(404).json({ error: 'Case not found' });
 
     const rewards = await query(
@@ -39,19 +84,6 @@ async function getCaseById(req, res) {
   }
 }
 
-// Server-side weighted reward selection
-function selectReward(rewards) {
-  const totalChance = rewards.reduce((sum, r) => sum + parseFloat(r.chance), 0);
-  const random = crypto.randomInt(0, 1000000) / 1000000 * totalChance;
-  
-  let cumulative = 0;
-  for (const reward of rewards) {
-    cumulative += parseFloat(reward.chance);
-    if (random <= cumulative) return reward;
-  }
-  return rewards[rewards.length - 1];
-}
-
 // Open a case
 async function openCase(req, res) {
   try {
@@ -63,7 +95,6 @@ async function openCase(req, res) {
     );
     if (!caseData) return res.status(404).json({ error: 'Case not found' });
 
-    // Handle special case types
     if (caseData.case_type === 'daily_free') {
       return await openDailyFreeCase(req, res, caseData);
     }
@@ -91,7 +122,6 @@ async function openCase(req, res) {
       if (winRoll < winChance) {
         selectedReward = rewards[0];
       } else {
-        // Lost - deduct stars, no reward
         await transaction(async (conn) => {
           await conn.execute(
             `UPDATE balances SET stars_balance = stars_balance - ? WHERE user_id = ?`,
@@ -113,7 +143,6 @@ async function openCase(req, res) {
       selectedReward = selectReward(rewards);
     }
 
-    // Process win
     const result = await transaction(async (conn) => {
       const balanceBefore = parseFloat(balance.stars_balance);
       const balanceAfter = balanceBefore - parseFloat(caseData.price);
@@ -137,11 +166,15 @@ async function openCase(req, res) {
           [userId, starsWon - caseData.price, balanceBefore, balanceAfter + starsWon, `Won ${starsWon} Stars from case`]
         );
       } else {
-        const [invResult] = await conn.execute(
+        const invResult = await conn.execute(
           `INSERT INTO inventory (user_id, reward_id, case_id, status) VALUES (?, ?, ?, 'owned')`,
           [userId, selectedReward.id, id]
         );
-        inventoryId = invResult.insertId;
+        inventoryId = ensureInventoryId(invResult);
+
+        if (!inventoryId) {
+          throw new Error('Inventory insert failed: could not determine inventory id');
+        }
 
         await conn.execute(
           `INSERT INTO inventory_history (inventory_id, user_id, action, notes) VALUES (?, ?, 'obtained', ?)`,
@@ -168,7 +201,6 @@ async function openCase(req, res) {
       reward: result.selectedReward,
       inventory_id: result.inventoryId,
       new_balance: result.balanceAfter,
-      // Send all rewards for animation (shuffled)
       animation_rewards: shuffleRewardsForAnimation(rewards, selectedReward),
     });
   } catch (err) {
@@ -180,17 +212,15 @@ async function openCase(req, res) {
 async function openDailyFreeCase(req, res, caseData) {
   const userId = req.user.id;
 
-  // Check task completion
   if (caseData.task_type === 'channel_sub') {
-    // This is verified client-side via Telegram SDK in production
-    // Server trusts the check for now; add webhook verification for production
+    // checked client-side
   }
   if (caseData.task_type === 'referrals') {
     const refCount = await queryOne(
       `SELECT COUNT(*) as cnt FROM referrals WHERE referrer_id = ?`, [userId]
     );
     if ((refCount?.cnt || 0) < caseData.task_min_referrals) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: `You need ${caseData.task_min_referrals} referrals to open this case`,
         current: refCount?.cnt || 0,
         required: caseData.task_min_referrals
@@ -198,7 +228,6 @@ async function openDailyFreeCase(req, res, caseData) {
     }
   }
 
-  // Check 24h cooldown
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
   const tomorrowStart = new Date(todayStart);
@@ -211,7 +240,7 @@ async function openDailyFreeCase(req, res, caseData) {
   );
 
   if (existing) {
-    return res.status(400).json({ 
+    return res.status(400).json({
       error: 'Already claimed today. Come back tomorrow!',
       next_at: tomorrowStart.toISOString()
     });
@@ -244,11 +273,18 @@ async function openDailyFreeCase(req, res, caseData) {
         [userId, starsWon, bal.stars_balance, parseFloat(bal.stars_balance) + starsWon]
       );
     } else {
-      const [inv] = await conn.execute(
+      const invResult = await conn.execute(
         `INSERT INTO inventory (user_id, reward_id, case_id, status) VALUES (?, ?, ?, 'owned')`,
         [userId, selectedReward.id, caseData.id]
       );
-      inventoryId = inv.insertId;
+      inventoryId = ensureInventoryId(invResult);
+      if (!inventoryId) {
+        throw new Error('Inventory insert failed: could not determine inventory id');
+      }
+      await conn.execute(
+        `INSERT INTO inventory_history (inventory_id, user_id, action, notes) VALUES (?, ?, 'obtained', ?)`,
+        [inventoryId, userId, `Won from daily free case: ${caseData.name}`]
+      );
     }
 
     await conn.execute(
@@ -281,7 +317,6 @@ async function openReferralCase(req, res, caseData) {
     });
   }
 
-  // Check 24h cooldown
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
   const tomorrowStart = new Date(todayStart);
@@ -327,11 +362,18 @@ async function openReferralCase(req, res, caseData) {
         [userId, starsWon, bal.stars_balance, parseFloat(bal.stars_balance) + starsWon]
       );
     } else {
-      const [inv] = await conn.execute(
+      const invResult = await conn.execute(
         `INSERT INTO inventory (user_id, reward_id, case_id, status) VALUES (?, ?, ?, 'owned')`,
         [userId, selectedReward.id, caseData.id]
       );
-      inventoryId = inv.insertId;
+      inventoryId = ensureInventoryId(invResult);
+      if (!inventoryId) {
+        throw new Error('Inventory insert failed: could not determine inventory id');
+      }
+      await conn.execute(
+        `INSERT INTO inventory_history (inventory_id, user_id, action, notes) VALUES (?, ?, 'obtained', ?)`,
+        [inventoryId, userId, `Won from referral case: ${caseData.name}`]
+      );
     }
 
     await conn.execute(
@@ -348,17 +390,6 @@ async function openReferralCase(req, res, caseData) {
     inventory_id: result.inventoryId,
     animation_rewards: shuffleRewardsForAnimation(rewards, selectedReward),
   });
-}
-
-function shuffleRewardsForAnimation(rewards, winner) {
-  const pool = [];
-  // Create a pool of 30 items for animation reel
-  for (let i = 0; i < 30; i++) {
-    pool.push(rewards[Math.floor(Math.random() * rewards.length)]);
-  }
-  // Place winner at position 24 (landing spot)
-  pool[23] = winner;
-  return pool;
 }
 
 module.exports = { getCases, getCaseById, openCase };
