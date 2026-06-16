@@ -6,8 +6,8 @@ import axios from 'axios';
 const BASE = process.env.REACT_APP_API_URL || '/api';
 const api = axios.create({ baseURL: BASE, timeout: 15000 });
 api.interceptors.request.use(cfg => {
-  cfg.headers = cfg.headers || {};
-  Object.assign(cfg.headers, getAdminAuthHeaders());
+  const token = syncAdminInitData();
+  if (token) cfg.headers['X-Init-Data'] = token;
   return cfg;
 });
 api.interceptors.response.use(r => r, e => Promise.reject(new Error(e.response?.data?.error || 'Request failed')));
@@ -27,27 +27,6 @@ const ADMIN_USERNAMES = new Set(
     .map(v => v.trim().toLowerCase())
     .filter(Boolean)
 );
-
-const BROWSER_ADMIN_KEY = Array.from(ADMIN_IDS)[0] ? String(Array.from(ADMIN_IDS)[0]) : '';
-
-function getAdminAuthHeaders() {
-  const headers = {};
-  const tg = getTelegramWebApp();
-  const tgInitData = tg?.initData || '';
-  if (tgInitData) {
-    headers['X-Init-Data'] = tgInitData;
-    return headers;
-  }
-
-  if (BROWSER_ADMIN_KEY) {
-    headers['X-Admin-Key'] = BROWSER_ADMIN_KEY;
-    return headers;
-  }
-
-  const stored = localStorage.getItem('admin_init_data') || '';
-  if (stored) headers['X-Init-Data'] = stored;
-  return headers;
-}
 
 function getTelegramWebApp() {
   try {
@@ -1057,20 +1036,18 @@ function Login() {
 
   async function handleLogin(providedInitData) {
     const data = String(providedInitData ?? initData ?? '').trim();
-    if (!data) { setError('Access key is missing'); return; }
+    if (!data) { setError('Enter your Telegram initData'); return; }
     if (telegramUser && !isAllowedAdminUser(telegramUser)) {
       setError('This Telegram account is not allowed to access admin.');
       return;
     }
     setLoading(true);
     try {
-      if (data !== BROWSER_ADMIN_KEY) {
-        localStorage.setItem('admin_init_data', data);
-      }
+      localStorage.setItem('admin_init_data', data);
       await api.get('/admin/dashboard');
       window.location.reload();
     } catch (e) {
-      if (data !== BROWSER_ADMIN_KEY) localStorage.removeItem('admin_init_data');
+      localStorage.removeItem('admin_init_data');
       setError('Invalid credentials or not an admin');
     } finally {
       setLoading(false);
@@ -1086,9 +1063,7 @@ function Login() {
         <div style={{ textAlign: 'center', marginBottom: 28 }}>
           <div style={{ fontSize: 48, marginBottom: 10 }}>🎁</div>
           <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>TmuxCase Admin</div>
-          <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)' }}>
-            {BROWSER_ADMIN_KEY ? 'Browser admin access is enabled' : 'Telegram initData orqali kirish'}
-          </div>
+          <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)' }}>Telegram initData orqali kirish</div>
         </div>
         <Alert msg={error} type="error" />
         {detectedUser && (
@@ -1097,28 +1072,23 @@ function Login() {
             <div><strong>Username:</strong> @{detectedUser.username || 'no username'}</div>
           </div>
         )}
-        {!BROWSER_ADMIN_KEY && (
-          <div className="form-group">
-            <label className="form-label">Telegram InitData</label>
-            <textarea
-              className="form-input"
-              rows={4}
-              placeholder="query_id=...&user=...&auth_date=...&hash=..."
-              value={initData}
-              onChange={e => setInitData(e.target.value)}
-              style={{ resize: 'none', fontFamily: 'monospace', fontSize: 11 }}
-            />
-          </div>
-        )}
-        {!BROWSER_ADMIN_KEY && (
-          <button className="btn btn-primary w-full" onClick={() => handleLogin()} disabled={loading}>
-            {loading ? 'Checking...' : 'Login →'}
-          </button>
-        )}
+        <div className="form-group">
+          <label className="form-label">Telegram InitData</label>
+          <textarea
+            className="form-input"
+            rows={4}
+            placeholder="query_id=...&user=...&auth_date=...&hash=..."
+            value={initData}
+            onChange={e => setInitData(e.target.value)}
+            style={{ resize: 'none', fontFamily: 'monospace', fontSize: 11 }}
+          />
+        </div>
+        <button className="btn btn-primary w-full" onClick={() => handleLogin()} disabled={loading}>
+          {loading ? 'Checking...' : 'Login →'}
+        </button>
         <div style={{ marginTop: 16, fontSize: 12, color: 'rgba(255,255,255,0.3)', textAlign: 'center', lineHeight: 1.6 }}>
-          {BROWSER_ADMIN_KEY
-            ? 'Admin panel browser access key orqali ochildi.'
-            : 'Telegram ichida ochilganda initData avtomatik olinadi.<br/>Ruxsat faqat ADMIN_IDS ga mos bo‘lsa beriladi.'}
+          Telegram ichida ochilganda initData avtomatik olinadi.<br/>
+          Ruxsat faqat ADMIN_IDS ga mos bo‘lsa beriladi.
         </div>
       </div>
     </div>
@@ -1189,14 +1159,10 @@ export default function App() {
     }
   } catch (e) {}
 
-  const [authed, setAuthed] = useState(!!syncAdminInitData() || !!BROWSER_ADMIN_KEY);
+  const [authed, setAuthed] = useState(!!syncAdminInitData());
 
   useEffect(() => {
     const check = async () => {
-      if (BROWSER_ADMIN_KEY) {
-        setAuthed(true);
-        return;
-      }
       if (!syncAdminInitData()) { setAuthed(false); return; }
       try {
         await api.get('/admin/dashboard');
