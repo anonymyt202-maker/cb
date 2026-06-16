@@ -2,6 +2,7 @@ const { Telegraf } = require('telegraf');
 const axios = require('axios');
 const { query, queryOne, transaction } = require('../utils/db');
 const { generateReferralCode, isAdminUser } = require('../middleware/auth');
+const { resolveMediaSource } = require('../utils/media');
 
 let bot;
 
@@ -326,11 +327,28 @@ async function sendBroadcastToAll(broadcastId, { message_text, image_url, button
   for (const user of users) {
     try {
       if (image_url) {
-        await b.telegram.sendPhoto(user.id, image_url, {
-          caption: message_text,
-          parse_mode: 'HTML',
-          ...keyboard,
-        });
+        let media = image_url;
+        try {
+          const resolved = await resolveMediaSource(image_url);
+          if (resolved?.url) media = resolved.url;
+        } catch (resolveErr) {
+          console.warn('Broadcast media resolve failed:', resolveErr?.message || resolveErr);
+        }
+
+        if (String(media).toLowerCase().endsWith('.webm') || String(media).toLowerCase().endsWith('.mp4') || String(media).toLowerCase().endsWith('.mov')) {
+          await b.telegram.sendVideo(user.id, media, {
+            caption: message_text,
+            parse_mode: 'HTML',
+            supports_streaming: true,
+            ...keyboard,
+          });
+        } else {
+          await b.telegram.sendPhoto(user.id, media, {
+            caption: message_text,
+            parse_mode: 'HTML',
+            ...keyboard,
+          });
+        }
       } else {
         await b.telegram.sendMessage(user.id, message_text, {
           parse_mode: 'HTML',

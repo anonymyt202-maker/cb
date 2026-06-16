@@ -284,27 +284,16 @@ initSchema();
 
 // ── API (mysql2 bilan mos) ──────────────────────────────────────────────────
 
-// better-sqlite3 sync, biz mysql2-ga o'xshash async wrapper beramiz.
-// Muhim: transaction ichida async db.transaction ishlatmaymiz, chunki bizning
-// controllerlar `await conn.execute(...)` uslubida yozilgan. Shu sabab bu wrapper
-// ketma-ket ishlaydi va mysql2 ning `[rows, fields]` shakliga yaqin javob qaytaradi.
-function executeSql(sql, params = []) {
+// better-sqlite3 sync, biz async wrapper beramiz
+async function query(sql, params = []) {
   const normalized = normalizeSql(sql);
   const stmt = db.prepare(normalized);
-  const flat = flatParams(params);
-
   if (/^\s*(select|pragma)/i.test(normalized)) {
-    const rows = stmt.all(...flat);
-    return [rows, undefined];
+    return stmt.all(...flatParams(params));
   }
-
-  const info = stmt.run(...flat);
-  return [{ insertId: info.lastInsertRowid, affectedRows: info.changes }, undefined];
-}
-
-async function query(sql, params = []) {
-  const [rows] = executeSql(sql, params);
-  return rows;
+  const info = stmt.run(...flatParams(params));
+  // mysql2 insertId / affectedRows mos
+  return [{ insertId: info.lastInsertRowid, affectedRows: info.changes }];
 }
 
 async function queryOne(sql, params = []) {
@@ -314,11 +303,24 @@ async function queryOne(sql, params = []) {
 }
 
 async function transaction(callback) {
+  // SQLite transactionlar sinxron ishlaydi, lekin controllerlarimiz async/await ishlatadi.
+  // Shu sabab BEGIN/COMMIT/ROLLBACK ni qo'lda boshqaramiz.
   const fakeConn = {
-    execute: async (sql, params) => executeSql(sql, params),
+    execute: async (sql, params) => {
+      const res = await query(sql, params);
+      return [res];
+    },
   };
 
-  return await callback(fakeConn);
+  db.exec('BEGIN');
+  try {
+    const result = await callback(fakeConn);
+    db.exec('COMMIT');
+    return result;
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch (_) {}
+    throw err;
+  }
 }
 
 // MySQL placeholder ? → SQLite ? (ular bir xil aslida)

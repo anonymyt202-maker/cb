@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { gamesApi } from 'utils/api';
 import { useApp } from 'hooks/useApp';
+import MediaPreview from 'components/common/MediaPreview';
 
 function ItemSelectModal({ items, title, onSelect, onClose }) {
   const [search, setSearch] = useState('');
@@ -36,7 +37,7 @@ function ItemSelectModal({ items, title, onSelect, onClose }) {
               }}
             >
               <div style={{ fontSize: 36, flexShrink: 0 }}>
-                {item.gift_emoji || (item.reward_type === 'nft' ? '🖼️' : '🎁')}
+                {item.gift_emoji ? <MediaPreview source={item.gift_emoji} alt={item.name} style={{ width: 36, height: 36 }} fit="contain" fallback={<span>{item.gift_emoji}</span>} /> : item.image_url ? <MediaPreview source={item.image_url} alt={item.name} style={{ width: 36, height: 36 }} fit="contain" fallback={item.reward_type === 'nft' ? '🖼️' : '🎁'} /> : (item.reward_type === 'nft' ? '🖼️' : '🎁')}
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>{item.name}</div>
@@ -127,7 +128,7 @@ function ItemPanel({ label, item, placeholder, onClick }) {
       {item ? (
         <>
           <div style={{ fontSize: 44, lineHeight: 1, marginBottom: 6 }}>
-            {item.gift_emoji || (item.reward_type === 'nft' ? '🖼️' : '🎁')}
+            {item.gift_emoji ? <MediaPreview source={item.gift_emoji} alt={item.name} style={{ width: 44, height: 44 }} fit="contain" fallback={<span>{item.gift_emoji}</span>} /> : item.image_url ? <MediaPreview source={item.image_url} alt={item.name} style={{ width: 44, height: 44 }} fit="contain" fallback={item.reward_type === 'nft' ? '🖼️' : '🎁'} /> : (item.reward_type === 'nft' ? '🖼️' : '🎁')}
           </div>
           <div style={{ fontSize: 12, fontWeight: 700, textAlign: 'center', lineHeight: 1.3, marginBottom: 4 }}>{item.name}</div>
           <span className={`rarity-badge ${item.rarity}`} style={{ fontSize: 9 }}>{item.rarity}</span>

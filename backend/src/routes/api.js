@@ -12,6 +12,7 @@ const depositsCtrl = require('../controllers/deposits');
 const adminCtrl = require('../controllers/admin');
 const { query, queryOne } = require('../utils/db');
 const { createStarsInvoiceLink } = require('../services/bot');
+const { resolveMediaSource } = require('../utils/media');
 
 const router = express.Router();
 
@@ -192,6 +193,23 @@ router.get('/transactions', authMiddleware, async (req, res) => {
     res.json({ transactions });
   } catch (err) {
     res.status(500).json({ error: 'Failed to load transactions' });
+  }
+});
+
+
+// Media resolver for Telegram links / file_ids / public previews
+router.get('/media/resolve', async (req, res) => {
+  try {
+    const { source } = req.query;
+    if (!source) {
+      return res.json({ success: true, url: null, kind: 'image', source_type: 'empty' });
+    }
+
+    const result = await resolveMediaSource(source);
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('media resolve error:', err?.message || err);
+    return res.status(500).json({ error: 'Failed to resolve media' });
   }
 });
 

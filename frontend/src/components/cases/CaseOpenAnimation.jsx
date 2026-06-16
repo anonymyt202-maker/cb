@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import confetti from 'canvas-confetti';
+import MediaPreview from 'components/common/MediaPreview';
 
 const RARITY_COLORS = {
   common: '#6b7280',
@@ -14,14 +15,24 @@ function RewardDisplay({ reward, size = 'normal' }) {
   const imgSize = isLarge ? '110px' : '70px';
 
   if (reward.reward_type === 'gift' && reward.gift_emoji) {
-    return <span style={{ fontSize, lineHeight: 1 }}>{reward.gift_emoji}</span>;
+    return (
+      <MediaPreview
+        source={reward.gift_emoji}
+        alt={reward.name}
+        style={{ width: imgSize, height: imgSize }}
+        fit="contain"
+        fallback={<span style={{ fontSize, lineHeight: 1 }}>{reward.gift_emoji}</span>}
+      />
+    );
   }
   if (reward.image_url) {
     return (
-      <img
-        src={reward.image_url}
+      <MediaPreview
+        source={reward.image_url}
         alt={reward.name}
-        style={{ width: imgSize, height: imgSize, objectFit: 'contain' }}
+        style={{ width: imgSize, height: imgSize }}
+        fit="contain"
+        fallback={<span style={{ fontSize, lineHeight: 1 }}>🎁</span>}
       />
     );
   }

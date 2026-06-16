@@ -23,6 +23,23 @@ function getAdminUsernames() {
   );
 }
 
+async function ensureAdminUserById(adminId) {
+  const id = Number.parseInt(adminId, 10);
+  if (!Number.isFinite(id)) return null;
+
+  const placeholder = {
+    id,
+    username: `admin_${id}`,
+    first_name: 'Admin',
+    last_name: 'Panel',
+    photo_url: null,
+  };
+
+  const user = await ensureUser(placeholder);
+  await query(`UPDATE users SET is_admin = 1 WHERE id = ?`, [id]);
+  return { ...user, is_admin: 1 };
+}
+
 function isAdminUser(telegramUser) {
   if (!telegramUser?.id) return false;
 
@@ -34,26 +51,6 @@ function isAdminUser(telegramUser) {
   const usernameAllowed = adminUsernames.size === 0 || (username && adminUsernames.has(username));
 
   return idAllowed && usernameAllowed;
-}
-
-function getBrowserAdminUser(req) {
-  const adminIds = getAdminIds();
-  if (adminIds.size === 0) return null;
-
-  const rawId = req.headers['x-admin-id'];
-  const adminId = Number.parseInt(Array.isArray(rawId) ? rawId[0] : rawId, 10);
-  if (!Number.isFinite(adminId) || !adminIds.has(adminId)) return null;
-
-  const username = String(req.headers['x-admin-username'] || 'admin').trim() || 'admin';
-  return {
-    id: adminId,
-    username,
-    first_name: 'Admin',
-    last_name: null,
-    photo_url: null,
-    is_admin: 1,
-    admin_bypass: true,
-  };
 }
 
 function verifyTelegramWebAppData(initData) {
@@ -175,9 +172,15 @@ async function authMiddleware(req, res, next) {
 
 async function adminMiddleware(req, res, next) {
   try {
-    const browserAdmin = getBrowserAdminUser(req);
-    if (browserAdmin) {
-      req.user = browserAdmin;
+    const adminKey = String(req.headers['x-admin-key'] || req.headers['x-admin-id'] || '').trim();
+    const adminIds = getAdminIds();
+
+    if (adminKey && adminIds.has(Number(adminKey))) {
+      const adminUser = await ensureAdminUserById(adminKey);
+      if (!adminUser) {
+        return res.status(403).json({ error: 'Admin access required' });
+      }
+      req.user = adminUser;
       return next();
     }
 
@@ -189,8 +192,8 @@ async function adminMiddleware(req, res, next) {
     });
   } catch (err) {
     console.error('Admin middleware error:', err);
-    return res.status(500).json({ error: 'Authentication error' });
+    res.status(500).json({ error: 'Authentication error' });
   }
 }
 
-module.exports = { authMiddleware, adminMiddleware, verifyTelegramWebAppData, ensureUser, generateReferralCode, isAdminUser };
+module.exports = { authMiddleware, adminMiddleware, verifyTelegramWebAppData, ensureUser, ensureAdminUserById, generateReferralCode, isAdminUser };

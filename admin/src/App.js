@@ -6,14 +6,8 @@ import axios from 'axios';
 const BASE = process.env.REACT_APP_API_URL || '/api';
 const api = axios.create({ baseURL: BASE, timeout: 15000 });
 api.interceptors.request.use(cfg => {
-  const adminHeaders = getBrowserAdminHeaders();
-  if (Object.keys(adminHeaders).length > 0) {
-    Object.assign(cfg.headers, adminHeaders);
-    return cfg;
-  }
-
-  const token = syncAdminInitData();
-  if (token) cfg.headers['X-Init-Data'] = token;
+  cfg.headers = cfg.headers || {};
+  Object.assign(cfg.headers, getAdminAuthHeaders());
   return cfg;
 });
 api.interceptors.response.use(r => r, e => Promise.reject(new Error(e.response?.data?.error || 'Request failed')));
@@ -34,23 +28,25 @@ const ADMIN_USERNAMES = new Set(
     .filter(Boolean)
 );
 
-const PRIMARY_ADMIN_ID = Array.from(ADMIN_IDS)[0] || null;
-const PRIMARY_ADMIN_USERNAME =
-  String(process.env.REACT_APP_ADMIN_USERNAME || process.env.REACT_APP_ADMIN_USERNAMES || '')
-    .split(',')
-    .map(v => v.trim())
-    .filter(Boolean)[0] || 'admin';
+const BROWSER_ADMIN_KEY = Array.from(ADMIN_IDS)[0] ? String(Array.from(ADMIN_IDS)[0]) : '';
 
-function hasBrowserAdminAccess() {
-  return PRIMARY_ADMIN_ID !== null;
-}
+function getAdminAuthHeaders() {
+  const headers = {};
+  const tg = getTelegramWebApp();
+  const tgInitData = tg?.initData || '';
+  if (tgInitData) {
+    headers['X-Init-Data'] = tgInitData;
+    return headers;
+  }
 
-function getBrowserAdminHeaders() {
-  if (!hasBrowserAdminAccess()) return {};
-  return {
-    'X-Admin-Id': String(PRIMARY_ADMIN_ID),
-    'X-Admin-Username': PRIMARY_ADMIN_USERNAME,
-  };
+  if (BROWSER_ADMIN_KEY) {
+    headers['X-Admin-Key'] = BROWSER_ADMIN_KEY;
+    return headers;
+  }
+
+  const stored = localStorage.getItem('admin_init_data') || '';
+  if (stored) headers['X-Init-Data'] = stored;
+  return headers;
 }
 
 function getTelegramWebApp() {
@@ -62,7 +58,6 @@ function getTelegramWebApp() {
 }
 
 function syncAdminInitData() {
-  if (hasBrowserAdminAccess()) return '';
   try {
     const tg = getTelegramWebApp();
     const initData = tg?.initData || '';
@@ -80,6 +75,64 @@ function isAllowedAdminUser(user) {
   const username = String(user.username || '').trim().toLowerCase();
   const usernameOk = ADMIN_USERNAMES.size === 0 || (username && ADMIN_USERNAMES.has(username));
   return idOk && usernameOk;
+}
+
+
+function MediaPreview({ source, alt = '', size = 72, fit = 'contain' }) {
+  const [resolved, setResolved] = useState(null);
+  const [kind, setKind] = useState('image');
+
+  useEffect(() => {
+    let mounted = true;
+    const value = String(source || '').trim();
+    if (!value) {
+      setResolved(null);
+      return;
+    }
+
+    const isPlainEmoji = value.length <= 4 && !/^https?:\/\//i.test(value) && !/^[A-Za-z0-9_-]{20,}$/.test(value);
+    if (isPlainEmoji) {
+      setResolved(value);
+      setKind('emoji');
+      return;
+    }
+
+    const direct = /^https?:\/\//i.test(value) && !/^https?:\/\/(?:t\.me|telegram\.me)\//i.test(value);
+    if (direct) {
+      setResolved(value);
+      setKind(/\.(webm|mp4|mov)$/i.test(value) ? 'video' : 'image');
+      return;
+    }
+
+    api.get('/media/resolve', { params: { source: value } })
+      .then(r => {
+        if (!mounted) return;
+        setResolved(r.data?.url || null);
+        setKind(r.data?.kind || 'image');
+      })
+      .catch(() => {
+        if (mounted) {
+          setResolved(null);
+          setKind('image');
+        }
+      });
+
+    return () => { mounted = false; };
+  }, [source]);
+
+  if (!source) return null;
+  if (kind === 'emoji') {
+    return <div style={{ width: size, height: size, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size * 0.55 }}>{resolved}</div>;
+  }
+  if (!resolved) {
+    return <div style={{ width: size, height: size, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size * 0.55, background: 'rgba(255,255,255,0.05)' }}>🖼️</div>;
+  }
+
+  if (kind === 'video') {
+    return <video src={resolved} autoPlay loop muted playsInline style={{ width: size, height: size, objectFit: fit, borderRadius: 14 }} />;
+  }
+
+  return <img src={resolved} alt={alt} style={{ width: size, height: size, objectFit: fit, borderRadius: 14 }} />;
 }
 
 // ========== AUTH CONTEXT ==========
@@ -481,7 +534,13 @@ function CasesManager() {
           {['name', 'description', 'image_url'].map(f => (
             <div className="form-group" key={f}>
               <label className="form-label">{f.replace('_', ' ')}</label>
-              <input className="form-input" placeholder={f} value={form[f] || ''} onChange={e => setForm(p => ({ ...p, [f]: e.target.value }))} />
+              <input className="form-input" placeholder={f === 'image_url' ? 'https://..., telegram link, or file_id' : f} value={form[f] || ''} onChange={e => setForm(p => ({ ...p, [f]: e.target.value }))} />
+              {f === 'image_url' && form.image_url ? (
+                <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <MediaPreview source={form.image_url} alt={form.name || 'preview'} size={64} />
+                  <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)' }}>Telegram photo, sticker, or channel preview supported.</div>
+                </div>
+              ) : null}
             </div>
           ))}
           <div className="form-group">
@@ -607,7 +666,7 @@ function RewardsManager({ caseData, onClose }) {
       <div style={{ maxHeight: 260, overflowY: 'auto', marginBottom: 14 }}>
         {loading ? <LoadingCenter /> : rewards.map(r => (
           <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-            <div style={{ fontSize: 28 }}>{r.gift_emoji || (r.reward_type === 'stars' ? '⭐' : '🖼️')}</div>
+            <div style={{ fontSize: 28 }}>{r.gift_emoji ? <MediaPreview source={r.gift_emoji} alt={r.name} size={28} /> : (r.reward_type === 'stars' ? '⭐' : '🖼️')}</div>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 13, fontWeight: 700 }}>{r.name}</div>
               <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>
@@ -649,12 +708,28 @@ function RewardsManager({ caseData, onClose }) {
                   </div>
                 ))}
               </div>
+              <div className="form-group" style={{ marginTop: 10 }}>
+                <label className="form-label">Custom Gift Emoji / Sticker file_id</label>
+                <input className="form-input" placeholder="Paste emoji, file_id, or t.me link" value={form.gift_emoji} onChange={e => setForm(p => ({ ...p, gift_emoji: e.target.value }))} />
+                {form.gift_emoji ? (
+                  <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <MediaPreview source={form.gift_emoji} alt={form.name || 'gift preview'} size={64} />
+                    <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)' }}>Animated stickers and premium emoji file_ids are supported here.</div>
+                  </div>
+                ) : null}
+              </div>
             </div>
           )}
           {form.reward_type === 'nft' && (
             <div className="form-group">
-              <label className="form-label">Image URL</label>
-              <input className="form-input" placeholder="https://..." value={form.image_url} onChange={e => setForm(p => ({ ...p, image_url: e.target.value }))} />
+              <label className="form-label">Image / Telegram link / file_id</label>
+              <input className="form-input" placeholder="https://..., t.me link, or file_id" value={form.image_url} onChange={e => setForm(p => ({ ...p, image_url: e.target.value }))} />
+              {form.image_url ? (
+                <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <MediaPreview source={form.image_url} alt={form.name || 'preview'} size={64} />
+                  <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)' }}>Sticker / animated media preview will render here.</div>
+                </div>
+              ) : null}
             </div>
           )}
           {form.reward_type === 'stars' ? (
@@ -909,7 +984,12 @@ function Broadcast() {
         </div>
         <div className="form-group">
           <label className="form-label">Image URL (optional)</label>
-          <input className="form-input" placeholder="https://example.com/image.jpg" value={form.image_url} onChange={e => setForm(p => ({ ...p, image_url: e.target.value }))} />
+          <input className="form-input" placeholder="https://example.com/image.jpg, t.me link, or file_id" value={form.image_url} onChange={e => setForm(p => ({ ...p, image_url: e.target.value }))} />
+          {form.image_url ? (
+            <div style={{ marginTop: 10 }}>
+              <MediaPreview source={form.image_url} alt="broadcast preview" size={72} />
+            </div>
+          ) : null}
         </div>
         <div className="form-group">
           <label className="form-label">Button Text (optional)</label>
@@ -1037,15 +1117,93 @@ function Logs() {
 
 // ========== LOGIN ==========
 function Login() {
+  const [initData, setInitData] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [telegramUser, setTelegramUser] = useState(null);
+
+  useEffect(() => {
+    const tg = getTelegramWebApp();
+    const currentUser = tg?.initDataUnsafe?.user || null;
+    setTelegramUser(currentUser);
+
+    const stored = syncAdminInitData();
+    setInitData(stored);
+
+    if (currentUser && !isAllowedAdminUser(currentUser)) {
+      setError('This Telegram account is not allowed to access admin.');
+      return;
+    }
+
+    if (stored) {
+      handleLogin(stored);
+    }
+  }, []);
+
+  async function handleLogin(providedInitData) {
+    const data = String(providedInitData ?? initData ?? '').trim();
+    if (!data) { setError('Access key is missing'); return; }
+    if (telegramUser && !isAllowedAdminUser(telegramUser)) {
+      setError('This Telegram account is not allowed to access admin.');
+      return;
+    }
+    setLoading(true);
+    try {
+      if (data !== BROWSER_ADMIN_KEY) {
+        localStorage.setItem('admin_init_data', data);
+      }
+      await api.get('/admin/dashboard');
+      window.location.reload();
+    } catch (e) {
+      if (data !== BROWSER_ADMIN_KEY) localStorage.removeItem('admin_init_data');
+      setError('Invalid credentials or not an admin');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const tg = getTelegramWebApp();
+  const detectedUser = telegramUser || tg?.initDataUnsafe?.user || null;
+
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: 20 }}>
-      <div style={{ background: '#161621', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 20, padding: 32, width: '100%', maxWidth: 420, textAlign: 'center' }}>
-        <div style={{ fontSize: 48, marginBottom: 10 }}>🎁</div>
-        <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 8 }}>TmuxCase Admin</div>
-        <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', lineHeight: 1.6 }}>
-          Admin access is configured from environment variables.
-          <br />
-          Telegram initData is not required for browser admin mode.
+      <div style={{ background: '#161621', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 20, padding: 32, width: '100%', maxWidth: 400 }}>
+        <div style={{ textAlign: 'center', marginBottom: 28 }}>
+          <div style={{ fontSize: 48, marginBottom: 10 }}>🎁</div>
+          <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>TmuxCase Admin</div>
+          <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)' }}>
+            {BROWSER_ADMIN_KEY ? 'Browser admin access is enabled' : 'Telegram initData orqali kirish'}
+          </div>
+        </div>
+        <Alert msg={error} type="error" />
+        {detectedUser && (
+          <div style={{ marginBottom: 16, padding: 12, borderRadius: 12, background: 'rgba(79,142,247,0.08)', border: '1px solid rgba(79,142,247,0.18)', fontSize: 13, lineHeight: 1.5 }}>
+            <div><strong>User ID:</strong> {detectedUser.id}</div>
+            <div><strong>Username:</strong> @{detectedUser.username || 'no username'}</div>
+          </div>
+        )}
+        {!BROWSER_ADMIN_KEY && (
+          <div className="form-group">
+            <label className="form-label">Telegram InitData</label>
+            <textarea
+              className="form-input"
+              rows={4}
+              placeholder="query_id=...&user=...&auth_date=...&hash=..."
+              value={initData}
+              onChange={e => setInitData(e.target.value)}
+              style={{ resize: 'none', fontFamily: 'monospace', fontSize: 11 }}
+            />
+          </div>
+        )}
+        {!BROWSER_ADMIN_KEY && (
+          <button className="btn btn-primary w-full" onClick={() => handleLogin()} disabled={loading}>
+            {loading ? 'Checking...' : 'Login →'}
+          </button>
+        )}
+        <div style={{ marginTop: 16, fontSize: 12, color: 'rgba(255,255,255,0.3)', textAlign: 'center', lineHeight: 1.6 }}>
+          {BROWSER_ADMIN_KEY
+            ? 'Admin panel browser access key orqali ochildi.'
+            : 'Telegram ichida ochilganda initData avtomatik olinadi.<br/>Ruxsat faqat ADMIN_IDS ga mos bo‘lsa beriladi.'}
         </div>
       </div>
     </div>
@@ -1107,44 +1265,31 @@ function PageWrapper({ title, children }) {
 
 // ========== APP ==========
 export default function App() {
-  const browserAdminMode = hasBrowserAdminAccess();
-  const [authed, setAuthed] = useState(browserAdminMode || !!syncAdminInitData());
-  const [authChecked, setAuthChecked] = useState(browserAdminMode);
+  try {
+    const tg = getTelegramWebApp();
+    if (tg?.initData && tg.initData.length > 0) {
+      localStorage.setItem('admin_init_data', tg.initData);
+      tg.ready();
+      tg.expand();
+    }
+  } catch (e) {}
+
+  const [authed, setAuthed] = useState(!!syncAdminInitData() || !!BROWSER_ADMIN_KEY);
 
   useEffect(() => {
-    if (browserAdminMode) {
-      localStorage.removeItem('admin_init_data');
-    }
-
     const check = async () => {
+      if (BROWSER_ADMIN_KEY) {
+        setAuthed(true);
+        return;
+      }
+      if (!syncAdminInitData()) { setAuthed(false); return; }
       try {
-        const token = syncAdminInitData();
-        if (!token && !browserAdminMode) {
-          setAuthed(false);
-          setAuthChecked(true);
-          return;
-        }
-
         await api.get('/admin/dashboard');
         setAuthed(true);
-      } catch {
-        setAuthed(false);
-      } finally {
-        setAuthChecked(true);
-      }
+      } catch { localStorage.removeItem('admin_init_data'); setAuthed(false); }
     };
-
     check();
-  }, [browserAdminMode]);
-
-  if (!authChecked) {
-    return (
-      <>
-        <style>{styles}</style>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', color: 'rgba(255,255,255,0.6)' }}>Loading admin...</div>
-      </>
-    );
-  }
+  }, []);
 
   if (!authed) return (
     <>

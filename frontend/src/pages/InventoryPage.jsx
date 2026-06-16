@@ -1,15 +1,16 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { inventoryApi } from 'utils/api';
 import { useApp } from 'hooks/useApp';
+import MediaPreview from 'components/common/MediaPreview';
 
 function InventoryItem({ item, onSell, onWithdraw }) {
   return (
     <div className={`inventory-item rarity-glow-${item.rarity}`}>
       <div className="inventory-img-wrap">
         {item.gift_emoji ? (
-          <span style={{ fontSize: 56 }}>{item.gift_emoji}</span>
+          <MediaPreview source={item.gift_emoji} alt={item.name} style={{ width: '75%', height: '75%' }} fit="contain" fallback={<span style={{ fontSize: 56 }}>{item.gift_emoji}</span>} />
         ) : item.image_url ? (
-          <img src={item.image_url} alt={item.name} style={{ width: '75%', height: '75%', objectFit: 'contain' }} />
+          <MediaPreview source={item.image_url} alt={item.name} style={{ width: '75%', height: '75%' }} fit="contain" fallback={<span style={{ fontSize: 48 }}>🖼️</span>} />
         ) : (
           <span style={{ fontSize: 48 }}>🖼️</span>
         )}
@@ -49,7 +50,7 @@ function ConfirmModal({ item, action, onConfirm, onCancel, loading }) {
         <div className="modal-handle" />
         <div style={{ textAlign: 'center', marginBottom: 20 }}>
           <div style={{ fontSize: 56, marginBottom: 12 }}>
-            {item.gift_emoji || (item.reward_type === 'nft' ? '🖼️' : '🎁')}
+            {item.gift_emoji ? <MediaPreview source={item.gift_emoji} alt={item.name} style={{ width: 56, height: 56 }} fit="contain" fallback={<span>{item.gift_emoji}</span>} /> : item.image_url ? <MediaPreview source={item.image_url} alt={item.name} style={{ width: 56, height: 56 }} fit="contain" fallback={item.reward_type === 'nft' ? '🖼️' : '🎁'} /> : (item.reward_type === 'nft' ? '🖼️' : '🎁')}
           </div>
           <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 6 }}>
             {isSell ? 'Sell Item?' : 'Withdraw Item?'}

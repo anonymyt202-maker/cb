@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { casesApi } from 'utils/api';
 import { useApp } from 'hooks/useApp';
 import CaseOpenAnimation from 'components/cases/CaseOpenAnimation';
+import MediaPreview from 'components/common/MediaPreview';
 
 const CASE_TYPE_LABELS = {
   normal: null,
@@ -24,7 +25,7 @@ function CaseCard({ caseData, onClick }) {
       )}
       <div className="case-image-wrap">
         {caseData.image_url ? (
-          <img src={caseData.image_url} alt={caseData.name} className="case-image" />
+          <MediaPreview source={caseData.image_url} alt={caseData.name} className="case-image" fit="contain" fallback={<div className="case-image-placeholder">🎁</div>} />
         ) : (
           <div className="case-image-placeholder">🎁</div>
         )}
@@ -82,8 +83,7 @@ function CaseDetailModal({ caseData, rewards, eligibility, onOpen, onClose, open
         <div className="modal-handle" />
         <div style={{ textAlign: 'center', marginBottom: 20 }}>
           {caseData.image_url ? (
-            <img src={caseData.image_url} alt={caseData.name}
-              style={{ width: 100, height: 100, objectFit: 'contain', marginBottom: 10 }} />
+            <MediaPreview source={caseData.image_url} alt={caseData.name} style={{ width: 100, height: 100, marginBottom: 10 }} fit="contain" fallback={<div style={{ fontSize: 72, marginBottom: 10 }}>🎁</div>} />
           ) : (
             <div style={{ fontSize: 72, marginBottom: 10 }}>🎁</div>
           )}
@@ -138,7 +138,7 @@ function CaseDetailModal({ caseData, rewards, eligibility, onOpen, onClose, open
                 border: `1px solid ${rarityBorderColor(reward.rarity)}`,
               }}>
                 <div style={{ fontSize: 28, flexShrink: 0 }}>
-                  {reward.gift_emoji || (reward.reward_type === 'stars' ? '⭐' : '🖼️')}
+                  {reward.gift_emoji ? <MediaPreview source={reward.gift_emoji} alt={reward.name} style={{ width: 28, height: 28 }} fit="contain" fallback={<span>{reward.gift_emoji}</span>} /> : reward.image_url ? <MediaPreview source={reward.image_url} alt={reward.name} style={{ width: 28, height: 28 }} fit="contain" fallback={reward.reward_type === 'stars' ? '⭐' : '🖼️'} /> : (reward.reward_type === 'stars' ? '⭐' : '🖼️')}
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 14, fontWeight: 700 }}>{reward.name}</div>
