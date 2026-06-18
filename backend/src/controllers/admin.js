@@ -431,16 +431,24 @@ async function getSettings(req, res) {
 async function updateSettings(req, res) {
   try {
     const updates = req.body;
+    console.log('[updateSettings] Received updates:', updates);
+    
     for (const [key, value] of Object.entries(updates)) {
+      const stringValue = String(value || '');
+      console.log(`[updateSettings] Setting ${key} = ${stringValue}`);
+      
       await query(
         `INSERT INTO settings (key_name, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?`,
-        [key, String(value), String(value)]
+        [key, stringValue, stringValue]
       );
     }
+    
     await logAdminAction(req.user.id, 'update_settings', 'settings', null, updates);
-    res.json({ success: true });
+    console.log('[updateSettings] Success');
+    res.json({ success: true, message: 'Settings updated successfully' });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to update settings' });
+    console.error('[updateSettings] Error:', err);
+    res.status(500).json({ error: err.message || 'Failed to update settings' });
   }
 }
 

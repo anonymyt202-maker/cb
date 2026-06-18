@@ -1102,10 +1102,17 @@ function Settings() {
 
   const handleSave = async () => {
     try {
-      await api.put('/admin/settings', settings);
-      setMsg('✅ Settings saved!');
-      setTimeout(() => setMsg(''), 3000);
-    } catch (e) { setMsg(e.message); }
+      setMsg('💾 Saving...');
+      const response = await api.put('/admin/settings', settings);
+      console.log('Settings saved:', response.data);
+      setMsg('✅ Settings saved successfully!');
+      setTimeout(() => setMsg(''), 4000);
+    } catch (e) {
+      console.error('Save error:', e);
+      const errMsg = e.response?.data?.error || e.message || 'Failed to save settings';
+      setMsg('❌ ' + errMsg);
+      setTimeout(() => setMsg(''), 5000);
+    }
   };
 
   const set = (key, val) => setSettings(p => ({ ...p, [key]: val }));
@@ -1155,17 +1162,57 @@ function Settings() {
 
           {activeTab === 'channel' && <>
             <div className="form-group">
-              <label className="form-label">Required Channel (@username or -100ID)</label>
-              <input className="form-input" placeholder="@yourchannel or leave empty to disable" value={settings.required_channel || ''} onChange={e => set('required_channel', e.target.value)} />
-              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 6 }}>Leave empty to disable channel requirement</div>
+              <label className="form-label">📢 Required Channel for Subscription</label>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                <input 
+                  className="form-input" 
+                  placeholder="@channelname or -100123456789" 
+                  id="channelInput"
+                  style={{ flex: 1, marginBottom: 0 }}
+                />
+                <button 
+                  className="btn btn-primary" 
+                  onClick={() => {
+                    const ch = document.getElementById('channelInput').value?.trim();
+                    if (ch) {
+                      set('required_channel', ch);
+                      document.getElementById('channelInput').value = '';
+                    }
+                  }}
+                  style={{ padding: '8px 16px' }}
+                >
+                  Set
+                </button>
+                {settings.required_channel && (
+                  <button 
+                    className="btn btn-danger" 
+                    onClick={() => set('required_channel', '')}
+                    style={{ padding: '8px 16px' }}
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+              {settings.required_channel && (
+                <div style={{ padding: 10, backgroundColor: 'rgba(76, 175, 80, 0.1)', borderRadius: 6, marginBottom: 12, border: '1px solid rgba(76, 175, 80, 0.3)' }}>
+                  ✅ Required channel: <strong>{settings.required_channel}</strong>
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>
+                Users must join this channel to use the mini app. Leave empty to disable.
+              </div>
             </div>
+
             <div className="form-group">
               <label className="form-label">Join Channel Message (HTML)</label>
-              <textarea className="form-input" rows={4} value={settings.join_channel_text || ''} onChange={e => set('join_channel_text', e.target.value)} style={{ resize: 'vertical' }} />
+              <textarea className="form-input" rows={3} placeholder="📢 Please join our channel..." value={settings.join_channel_text || ''} onChange={e => set('join_channel_text', e.target.value)} style={{ resize: 'vertical' }} />
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 6 }}>Shown when user hasn't joined the required channel</div>
             </div>
+
             <div className="form-group">
-              <label className="form-label">Subscription Success Message (HTML)</label>
-              <textarea className="form-input" rows={4} value={settings.subscription_success_text || ''} onChange={e => set('subscription_success_text', e.target.value)} style={{ resize: 'vertical' }} />
+              <label className="form-label">Success Message (HTML)</label>
+              <textarea className="form-input" rows={3} placeholder="✅ Thank you for joining!" value={settings.subscription_success_text || ''} onChange={e => set('subscription_success_text', e.target.value)} style={{ resize: 'vertical' }} />
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 6 }}>Shown after user joins the channel</div>
             </div>
           </>}
 
@@ -1178,10 +1225,68 @@ function Settings() {
               <label className="form-label">Open App Button Text</label>
               <input className="form-input" placeholder="🎰 Open Mini App" value={settings.open_app_button_text || ''} onChange={e => set('open_app_button_text', e.target.value)} />
             </div>
+
+            {/* Buttons Manager */}
             <div className="form-group">
-              <label className="form-label">Extra Buttons (JSON array)</label>
-              <textarea className="form-input" rows={4} placeholder={'[{"text":"🔗 Our Website","url":"https://..."}]'} value={settings.extra_buttons || '[]'} onChange={e => set('extra_buttons', e.target.value)} style={{ resize: 'vertical', fontFamily: 'monospace', fontSize: 12 }} />
-              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 6 }}>JSON format: [{"{"}"text":"Button","url":"https://..."{"}"}]</div>
+              <label className="form-label">📱 Extra Buttons</label>
+              <div style={{ marginBottom: 12, padding: 10, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 6 }}>
+                {(() => {
+                  try {
+                    const buttons = JSON.parse(settings.extra_buttons || '[]');
+                    return buttons.length > 0 ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {buttons.map((btn, i) => (
+                          <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 8, backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: 4, fontSize: 13 }}>
+                            <div><strong>{btn.text}</strong> → {btn.url.substring(0, 30)}...</div>
+                            <button className="btn btn-sm btn-danger" onClick={() => {
+                              const newBtns = buttons.filter((_, idx) => idx !== i);
+                              set('extra_buttons', JSON.stringify(newBtns));
+                            }} style={{ padding: '4px 8px', fontSize: 11 }}>Delete</button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12 }}>No buttons yet</div>;
+                  } catch (e) {
+                    return <div style={{ color: '#ff6b6b', fontSize: 12 }}>Invalid JSON</div>;
+                  }
+                })()}
+              </div>
+
+              {/* Add Button Form */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, marginBottom: 10 }}>
+                <input 
+                  className="form-input" 
+                  placeholder="Button text (e.g. 🔗 Website)" 
+                  id="btnText"
+                  style={{ marginBottom: 0 }}
+                />
+                <input 
+                  className="form-input" 
+                  placeholder="URL (e.g. https://...)" 
+                  id="btnUrl"
+                  style={{ marginBottom: 0 }}
+                />
+                <button 
+                  className="btn btn-primary" 
+                  onClick={() => {
+                    const text = document.getElementById('btnText').value?.trim();
+                    const url = document.getElementById('btnUrl').value?.trim();
+                    if (!text || !url) { alert('Fill in both fields'); return; }
+                    try {
+                      const buttons = JSON.parse(settings.extra_buttons || '[]');
+                      buttons.push({ text, url });
+                      set('extra_buttons', JSON.stringify(buttons));
+                      document.getElementById('btnText').value = '';
+                      document.getElementById('btnUrl').value = '';
+                    } catch (e) {
+                      alert('Error adding button');
+                    }
+                  }}
+                  style={{ padding: '8px 12px', marginBottom: 0 }}
+                >
+                  Add
+                </button>
+              </div>
             </div>
           </>}
 
