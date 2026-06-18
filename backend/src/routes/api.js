@@ -1,9 +1,12 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
-const { body, param, query: queryValidator, validationResult } = require('express-validator');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const { validationResult } = require('express-validator');
 const { authMiddleware, adminMiddleware } = require('../middleware/auth');
 
-// Controllers
 const casesCtrl = require('../controllers/cases');
 const inventoryCtrl = require('../controllers/inventory');
 const gamesCtrl = require('../controllers/games');
@@ -12,50 +15,56 @@ const depositsCtrl = require('../controllers/deposits');
 const adminCtrl = require('../controllers/admin');
 const { query, queryOne } = require('../utils/db');
 const { createStarsInvoiceLink } = require('../services/bot');
-const { resolveMediaSource } = require('../utils/media');
+const { processImageInput } = require('../utils/imageDownloader');
 
 const router = express.Router();
 
-// Rate limiters
-const openCaseLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 30,
-  message: { error: 'Too many case opens. Please wait.' },
+// ============ MULTER SETUP ============
+const UPLOAD_DIRS = {
+  gifts: path.join(__dirname, '../../uploads/gifts'),
+  nfts: path.join(__dirname, '../../uploads/nfts'),
+  cases: path.join(__dirname, '../../uploads/cases'),
+};
+Object.values(UPLOAD_DIRS).forEach(dir => {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-const upgradeLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 20,
-  message: { error: 'Too many upgrades. Please wait.' },
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const type = req.query.type || req.body.type || 'gifts';
+    const dir = UPLOAD_DIRS[type] || UPLOAD_DIRS.gifts;
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const hash = crypto.randomBytes(8).toString('hex');
+    const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
+    cb(null, `${Date.now()}_${hash}${ext}`);
+  },
 });
 
-const depositLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 5,
-  message: { error: 'Too many deposit requests.' },
+const upload = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: (req, file, cb) => {
+    const allowed = /\.(jpg|jpeg|png|gif|webp)$/i;
+    if (!allowed.test(file.originalname)) {
+      return cb(new Error('Only image files allowed'));
+    }
+    cb(null, true);
+  },
 });
 
-function validate(req, res, next) {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ error: errors.array()[0].msg });
-  }
-  next();
-}
+// ============ RATE LIMITERS ============
+const openCaseLimiter = rateLimit({ windowMs: 60000, max: 30, message: { error: 'Too many case opens.' } });
+const upgradeLimiter = rateLimit({ windowMs: 60000, max: 20, message: { error: 'Too many upgrades.' } });
+const depositLimiter = rateLimit({ windowMs: 60000, max: 5, message: { error: 'Too many deposit requests.' } });
 
-// ==================== USER ROUTES ====================
-
-// Auth / Profile
-router.get('/user/me', authMiddleware, async (req, res) => {
-  const user = req.user;
-  res.json({ user });
-});
+// ============ USER ROUTES ============
+router.get('/user/me', authMiddleware, async (req, res) => res.json({ user: req.user }));
 
 router.get('/user/balance', authMiddleware, async (req, res) => {
   try {
-    const bal = await queryOne(
-      `SELECT stars_balance FROM balances WHERE user_id = ?`, [req.user.id]
-    );
+    const bal = await queryOne(`SELECT stars_balance FROM balances WHERE user_id = ?`, [req.user.id]);
     res.json({ balance: parseFloat(bal?.stars_balance || 0) });
   } catch (err) {
     res.status(500).json({ error: 'Failed to load balance' });
@@ -67,7 +76,6 @@ router.get('/cases', authMiddleware, casesCtrl.getCases);
 router.get('/cases/:id', authMiddleware, casesCtrl.getCaseById);
 router.post('/cases/:id/open', authMiddleware, openCaseLimiter, casesCtrl.openCase);
 
-// Check free case eligibility
 router.get('/cases/:id/eligibility', authMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
@@ -85,49 +93,23 @@ router.get('/cases/:id/eligibility', authMiddleware, async (req, res) => {
         `SELECT id FROM daily_free_claims WHERE user_id = ? AND case_id = ? AND claimed_at >= ?`,
         [userId, id, todayStart.toISOString()]
       );
-
-      let taskCompleted = true;
-      let taskMessage = '';
-
+      let taskCompleted = true, taskMessage = '';
       if (caseData.task_type === 'referrals') {
-        const refCount = await queryOne(
-          `SELECT COUNT(*) as cnt FROM referrals WHERE referrer_id = ?`, [userId]
-        );
+        const refCount = await queryOne(`SELECT COUNT(*) as cnt FROM referrals WHERE referrer_id = ?`, [userId]);
         const count = refCount?.cnt || 0;
         taskCompleted = count >= caseData.task_min_referrals;
         taskMessage = `${count}/${caseData.task_min_referrals} referrals`;
       } else if (caseData.task_type === 'channel_sub') {
         taskMessage = `Subscribe to ${caseData.task_value}`;
       }
-
-      return res.json({
-        eligible: !claim && taskCompleted,
-        claimed_today: !!claim,
-        next_claim: tomorrowStart.toISOString(),
-        task_completed: taskCompleted,
-        task_message: taskMessage,
-        task_type: caseData.task_type,
-        task_value: caseData.task_value,
-      });
+      return res.json({ eligible: !claim && taskCompleted, claimed_today: !!claim, next_claim: tomorrowStart.toISOString(), task_completed: taskCompleted, task_message: taskMessage, task_type: caseData.task_type, task_value: caseData.task_value });
     }
 
     if (caseData.case_type === 'referral') {
-      const refCount = await queryOne(
-        `SELECT COUNT(*) as cnt FROM referrals WHERE referrer_id = ?`, [userId]
-      );
+      const refCount = await queryOne(`SELECT COUNT(*) as cnt FROM referrals WHERE referrer_id = ?`, [userId]);
       const count = refCount?.cnt || 0;
-      const claim = await queryOne(
-        `SELECT id FROM referral_case_claims WHERE user_id = ? AND case_id = ? AND claimed_at >= ?`,
-        [userId, id, todayStart.toISOString()]
-      );
-
-      return res.json({
-        eligible: count >= caseData.referrals_required && !claim,
-        claimed_today: !!claim,
-        current_referrals: count,
-        required_referrals: caseData.referrals_required,
-        next_claim: tomorrowStart.toISOString(),
-      });
+      const claim = await queryOne(`SELECT id FROM referral_case_claims WHERE user_id = ? AND case_id = ? AND claimed_at >= ?`, [userId, id, todayStart.toISOString()]);
+      return res.json({ eligible: count >= caseData.referrals_required && !claim, claimed_today: !!claim, current_referrals: count, required_referrals: caseData.referrals_required, next_claim: tomorrowStart.toISOString() });
     }
 
     res.json({ eligible: true });
@@ -151,8 +133,6 @@ router.get('/referrals', authMiddleware, referralsCtrl.getReferralInfo);
 
 // Deposits
 router.post('/deposit/ton', authMiddleware, depositLimiter, depositsCtrl.submitTonDeposit);
-
-// TON rate (public - auth kerak emas, foydalanuvchiga ko'rsatish uchun)
 router.get('/deposit/ton-rate', async (req, res) => {
   try {
     const setting = await queryOne(`SELECT value FROM settings WHERE key_name = 'ton_to_stars_rate'`);
@@ -163,58 +143,51 @@ router.get('/deposit/ton-rate', async (req, res) => {
 });
 router.get('/deposit/history', authMiddleware, depositsCtrl.getDepositHistory);
 
-// Stars invoice - link yaratib qaytaradi (WebApp.openInvoice() uchun)
 router.post('/deposit/stars/invoice', authMiddleware, depositLimiter, async (req, res) => {
   try {
     const { amount } = req.body;
-    if (!amount || amount < 1) {
-      return res.status(400).json({ error: 'Invalid amount' });
-    }
-
+    if (!amount || amount < 1) return res.status(400).json({ error: 'Invalid amount' });
     const link = await createStarsInvoiceLink(parseInt(amount));
-    if (link) {
-      res.json({ success: true, invoice_url: link });
-    } else {
-      res.status(500).json({ error: 'Failed to create invoice' });
-    }
+    if (link) res.json({ success: true, invoice_url: link });
+    else res.status(500).json({ error: 'Failed to create invoice' });
   } catch (err) {
-    console.error('Invoice error:', err);
     res.status(500).json({ error: 'Failed to create invoice' });
   }
 });
 
-// Transactions history
+// Transactions
 router.get('/transactions', authMiddleware, async (req, res) => {
   try {
-    const transactions = await query(
-      `SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 50`,
-      [req.user.id]
-    );
+    const transactions = await query(`SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 50`, [req.user.id]);
     res.json({ transactions });
   } catch (err) {
     res.status(500).json({ error: 'Failed to load transactions' });
   }
 });
 
+// ============ ADMIN: IMAGE UPLOAD (multipart) ============
+// POST /api/admin/upload?type=gifts|nfts|cases
+router.post('/admin/upload', adminMiddleware, upload.single('image'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No image file provided' });
+  const type = req.query.type || 'gifts';
+  const localPath = `/uploads/${type}/${req.file.filename}`;
+  res.json({ success: true, url: localPath });
+});
 
-// Media resolver for Telegram links / file_ids / public previews
-router.get('/media/resolve', async (req, res) => {
+// POST /api/admin/upload-url - download from URL and save locally
+router.post('/admin/upload-url', adminMiddleware, async (req, res) => {
   try {
-    const { source } = req.query;
-    if (!source) {
-      return res.json({ success: true, url: null, kind: 'image', source_type: 'empty' });
-    }
-
-    const result = await resolveMediaSource(source);
-    return res.json({ success: true, ...result });
+    const { url, type = 'gifts' } = req.body;
+    if (!url) return res.status(400).json({ error: 'URL is required' });
+    const localPath = await processImageInput(url, type);
+    if (!localPath) return res.status(400).json({ error: 'Failed to process image URL' });
+    res.json({ success: true, url: localPath });
   } catch (err) {
-    console.error('media resolve error:', err?.message || err);
-    return res.status(500).json({ error: 'Failed to resolve media' });
+    res.status(400).json({ error: err.message || 'Failed to download image' });
   }
 });
 
-// ==================== ADMIN ROUTES ====================
-
+// ============ ADMIN ROUTES ============
 router.get('/admin/dashboard', adminMiddleware, adminCtrl.getDashboard);
 router.get('/admin/users', adminMiddleware, adminCtrl.getUsers);
 router.get('/admin/users/:id', adminMiddleware, adminCtrl.getUserProfile);
@@ -241,6 +214,9 @@ router.post('/admin/deposits/:id/approve', adminMiddleware, adminCtrl.approveDep
 router.post('/admin/deposits/:id/reject', adminMiddleware, adminCtrl.rejectDeposit);
 
 router.post('/admin/broadcast', adminMiddleware, adminCtrl.sendBroadcast);
+router.get('/admin/broadcast', adminMiddleware, adminCtrl.getBroadcasts);
+router.get('/admin/broadcast/:id/status', adminMiddleware, adminCtrl.getBroadcastStatus);
+
 router.get('/admin/settings', adminMiddleware, adminCtrl.getSettings);
 router.put('/admin/settings', adminMiddleware, adminCtrl.updateSettings);
 router.get('/admin/logs', adminMiddleware, adminCtrl.getLogs);

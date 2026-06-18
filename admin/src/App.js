@@ -211,6 +211,9 @@ const styles = `
   .section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;}
   .section-title{font-size:17px;font-weight:800;}
   .divider{height:1px;background:rgba(255,255,255,.07);margin:20px 0;}
+  .hamburger{display:none;background:none;border:none;cursor:pointer;padding:8px;color:#fff;font-size:22px;}
+  @media (max-width:768px){.sidebar{transform:translateX(-100%);transition:transform .25s;z-index:200;}.sidebar.mobile-open{transform:translateX(0);}.main-content{margin-left:0!important;}.topbar{padding:12px 16px;}.content-area{padding:16px;}.hamburger{display:flex;align-items:center;}.stat-grid{grid-template-columns:1fr 1fr;}.table-responsive{overflow-x:auto;}.table th,.table td{padding:10px 12px;font-size:12px;}.modal-box{padding:18px;}.card{padding:16px;}.page-title{font-size:17px;}.hide-mobile{display:none!important;}}
+  @media (max-width:480px){.stat-grid{grid-template-columns:1fr;}.section-header{flex-direction:column;align-items:flex-start;gap:10px;}}
 `;
 
 // ========== HELPERS ==========
@@ -531,18 +534,35 @@ function CasesManager() {
 
       {showForm && (
         <Modal title={editCase ? 'Edit Case' : 'Create Case'} onClose={() => setShowForm(false)}>
-          {['name', 'description', 'image_url'].map(f => (
+          {['name', 'description'].map(f => (
             <div className="form-group" key={f}>
               <label className="form-label">{f.replace('_', ' ')}</label>
-              <input className="form-input" placeholder={f === 'image_url' ? 'https://..., telegram link, or file_id' : f} value={form[f] || ''} onChange={e => setForm(p => ({ ...p, [f]: e.target.value }))} />
-              {f === 'image_url' && form.image_url ? (
-                <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <MediaPreview source={form.image_url} alt={form.name || 'preview'} size={64} />
-                  <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)' }}>Telegram photo, sticker, or channel preview supported.</div>
-                </div>
-              ) : null}
+              <input className="form-input" placeholder={f} value={form[f] || ''} onChange={e => setForm(p => ({ ...p, [f]: e.target.value }))} />
             </div>
           ))}
+          <div className="form-group">
+            <label className="form-label">Image</label>
+            <input type="file" accept="image/*" id="case-img-upload" style={{ display: 'none' }}
+              onChange={async e => {
+                const file = e.target.files?.[0]; if (!file) return;
+                const fd = new FormData(); fd.append('image', file);
+                try {
+                  const r = await api.post('/admin/upload?type=cases', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+                  setForm(p => ({ ...p, image_url: r.data.url }));
+                } catch(err) { alert('Upload failed: ' + err.message); }
+              }} />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <label htmlFor="case-img-upload" className="btn btn-secondary btn-sm" style={{ cursor: 'pointer' }}>📎 Upload</label>
+              <input className="form-input" placeholder="or paste URL / t.me link" style={{ flex: 1 }}
+                value={form.image_url || ''} onChange={e => setForm(p => ({ ...p, image_url: e.target.value }))} />
+            </div>
+            {form.image_url && (
+              <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+                <img src={form.image_url.startsWith('/uploads/') ? `${(process.env.REACT_APP_API_URL||'/api').replace('/api','')}${form.image_url}` : form.image_url} alt="preview" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 10 }} onError={e => e.target.style.display='none'} />
+                <button className="btn btn-danger btn-sm" onClick={() => setForm(p => ({ ...p, image_url: '' }))}>✕</button>
+              </div>
+            )}
+          </div>
           <div className="form-group">
             <label className="form-label">Case Type</label>
             <select className="form-input" value={form.case_type} onChange={e => setForm(p => ({ ...p, case_type: e.target.value }))}>
@@ -711,25 +731,39 @@ function RewardsManager({ caseData, onClose }) {
               <div className="form-group" style={{ marginTop: 10 }}>
                 <label className="form-label">Custom Gift Emoji / Sticker file_id</label>
                 <input className="form-input" placeholder="Paste emoji, file_id, or t.me link" value={form.gift_emoji} onChange={e => setForm(p => ({ ...p, gift_emoji: e.target.value }))} />
-                {form.gift_emoji ? (
-                  <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <MediaPreview source={form.gift_emoji} alt={form.name || 'gift preview'} size={64} />
-                    <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)' }}>Animated stickers and premium emoji file_ids are supported here.</div>
+                {form.gift_emoji && form.gift_emoji.startsWith('/uploads/') ? (
+                  <div style={{ marginTop: 8 }}>
+                    <img src={`${(process.env.REACT_APP_API_URL||'/api').replace('/api','')}${form.gift_emoji}`} alt="preview" style={{ width: 64, height: 64, objectFit: 'contain', borderRadius: 10 }} />
                   </div>
+                ) : form.gift_emoji && form.gift_emoji.length <= 4 ? (
+                  <div style={{ marginTop: 8, fontSize: 40 }}>{form.gift_emoji}</div>
                 ) : null}
               </div>
             </div>
           )}
           {form.reward_type === 'nft' && (
             <div className="form-group">
-              <label className="form-label">Image / Telegram link / file_id</label>
-              <input className="form-input" placeholder="https://..., t.me link, or file_id" value={form.image_url} onChange={e => setForm(p => ({ ...p, image_url: e.target.value }))} />
-              {form.image_url ? (
-                <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <MediaPreview source={form.image_url} alt={form.name || 'preview'} size={64} />
-                  <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.45)' }}>Sticker / animated media preview will render here.</div>
+              <label className="form-label">NFT Image</label>
+              <input type="file" accept="image/*" id="nft-img-upload" style={{ display: 'none' }}
+                onChange={async e => {
+                  const file = e.target.files?.[0]; if (!file) return;
+                  const fd = new FormData(); fd.append('image', file);
+                  try {
+                    const r = await api.post('/admin/upload?type=nfts', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+                    setForm(p => ({ ...p, image_url: r.data.url }));
+                  } catch(err) { alert('Upload failed: ' + err.message); }
+                }} />
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <label htmlFor="nft-img-upload" className="btn btn-secondary btn-sm" style={{ cursor: 'pointer' }}>📎 Upload</label>
+                <input className="form-input" placeholder="or paste URL / t.me link" style={{ flex: 1 }}
+                  value={form.image_url || ''} onChange={e => setForm(p => ({ ...p, image_url: e.target.value }))} />
+              </div>
+              {form.image_url && (
+                <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <img src={form.image_url.startsWith('/uploads/') ? `${(process.env.REACT_APP_API_URL||'/api').replace('/api','')}${form.image_url}` : form.image_url} alt="preview" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 10 }} onError={e => e.target.style.display='none'} />
+                  <button className="btn btn-danger btn-sm" onClick={() => setForm(p => ({ ...p, image_url: '' }))}>✕</button>
                 </div>
-              ) : null}
+              )}
             </div>
           )}
           {form.reward_type === 'stars' ? (
@@ -960,36 +994,84 @@ function Deposits() {
 function Broadcast() {
   const [form, setForm] = useState({ message_text: '', image_url: '', button_text: '', button_url: '' });
   const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [msg, setMsg] = useState('');
+  const [broadcastId, setBroadcastId] = useState(null);
+  const [status, setStatus] = useState(null);
+
+  // Poll broadcast status
+  useEffect(() => {
+    if (!broadcastId) return;
+    const interval = setInterval(async () => {
+      try {
+        const r = await api.get(`/admin/broadcast/${broadcastId}/status`);
+        setStatus(r.data.broadcast);
+        if (r.data.broadcast.status === 'completed') clearInterval(interval);
+      } catch {}
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [broadcastId]);
+
+  const handleImageUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('image', file);
+      const r = await api.post('/admin/upload?type=gifts', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+      setForm(p => ({ ...p, image_url: r.data.url }));
+    } catch (e) { setMsg(e.message); } finally { setUploading(false); }
+  };
 
   const handleSend = async () => {
     if (!form.message_text) { setMsg('Message is required'); return; }
     if (!window.confirm('Send broadcast to ALL users?')) return;
-    setLoading(true);
+    setLoading(true); setStatus(null);
     try {
       const r = await api.post('/admin/broadcast', form);
-      setMsg(`Broadcast started! ID: ${r.data.broadcast_id}`);
+      setBroadcastId(r.data.broadcast_id);
+      setMsg(`✅ Broadcast started! ID: ${r.data.broadcast_id}`);
       setForm({ message_text: '', image_url: '', button_text: '', button_url: '' });
     } catch (e) { setMsg(e.message); } finally { setLoading(false); }
   };
 
+  const API_BASE = (process.env.REACT_APP_API_URL || '/api').replace('/api', '');
+
   return (
     <div>
       <div className="section-title mb-6">Broadcast Message</div>
-      <Alert msg={msg} type={msg.includes('started') ? 'success' : 'error'} />
+      <Alert msg={msg} type={msg.startsWith('✅') ? 'success' : 'error'} />
+
+      {status && (
+        <div className="card mb-4" style={{ maxWidth: 560 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>📊 Broadcast Status</div>
+          <div style={{ display: 'flex', gap: 16, fontSize: 13 }}>
+            <span>Status: <b>{status.status}</b></span>
+            <span style={{ color: '#10b981' }}>✅ Sent: {status.sent_count}</span>
+            <span style={{ color: '#ef4444' }}>❌ Failed: {status.failed_count}</span>
+          </div>
+        </div>
+      )}
+
       <div className="card" style={{ maxWidth: 560 }}>
         <div className="form-group">
           <label className="form-label">Message Text (HTML supported)</label>
           <textarea className="form-input" rows={5} placeholder="<b>Hello!</b> Check out our new cases..." value={form.message_text} onChange={e => setForm(p => ({ ...p, message_text: e.target.value }))} style={{ resize: 'vertical' }} />
         </div>
         <div className="form-group">
-          <label className="form-label">Image URL (optional)</label>
-          <input className="form-input" placeholder="https://example.com/image.jpg, t.me link, or file_id" value={form.image_url} onChange={e => setForm(p => ({ ...p, image_url: e.target.value }))} />
-          {form.image_url ? (
-            <div style={{ marginTop: 10 }}>
-              <MediaPreview source={form.image_url} alt="broadcast preview" size={72} />
+          <label className="form-label">Image (optional)</label>
+          <input type="file" accept="image/*" onChange={handleImageUpload} style={{ display: 'none' }} id="broadcast-img" />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <label htmlFor="broadcast-img" className="btn btn-secondary btn-sm" style={{ cursor: 'pointer' }}>{uploading ? '⏳ Uploading...' : '📎 Upload Image'}</label>
+            <input className="form-input" placeholder="or paste URL" style={{ flex: 1, minWidth: 160 }} value={form.image_url} onChange={e => setForm(p => ({ ...p, image_url: e.target.value }))} />
+          </div>
+          {form.image_url && (
+            <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
+              <img src={form.image_url.startsWith('/uploads/') ? `${API_BASE}${form.image_url}` : form.image_url} alt="preview" style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: 10 }} onError={e => e.target.style.display='none'} />
+              <button className="btn btn-danger btn-sm" onClick={() => setForm(p => ({ ...p, image_url: '' }))}>✕</button>
             </div>
-          ) : null}
+          )}
         </div>
         <div className="form-group">
           <label className="form-label">Button Text (optional)</label>
@@ -999,7 +1081,7 @@ function Broadcast() {
           <label className="form-label">Button URL (optional)</label>
           <input className="form-input" placeholder="https://..." value={form.button_url} onChange={e => setForm(p => ({ ...p, button_url: e.target.value }))} />
         </div>
-        <button className="btn btn-primary w-full" onClick={handleSend} disabled={loading}>
+        <button className="btn btn-primary w-full" onClick={handleSend} disabled={loading || uploading}>
           {loading ? <><Spinner /> Sending...</> : '📢 Send to All Users'}
         </button>
       </div>
@@ -1012,22 +1094,26 @@ function Settings() {
   const [settings, setSettings] = useState({});
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState('');
+  const [activeTab, setActiveTab] = useState('system');
 
   useEffect(() => {
-    api.get('/admin/settings').then(r => setSettings(r.data.settings)).finally(() => setLoading(false));
+    api.get('/admin/settings').then(r => setSettings(r.data.settings || {})).finally(() => setLoading(false));
   }, []);
 
   const handleSave = async () => {
     try {
       await api.put('/admin/settings', settings);
-      setMsg('Settings saved!');
+      setMsg('✅ Settings saved!');
+      setTimeout(() => setMsg(''), 3000);
     } catch (e) { setMsg(e.message); }
   };
 
-  const settingsDef = [
+  const set = (key, val) => setSettings(p => ({ ...p, [key]: val }));
+
+  const systemSettings = [
     { key: 'referral_reward_stars', label: 'Stars Per Referral', type: 'number' },
     { key: 'referral_reward_percentage', label: 'Referral Deposit Bonus %', type: 'number' },
-    { key: 'ton_to_stars_rate', label: 'TON → Stars Rate (Stars per 1 TON)', type: 'number' },
+    { key: 'ton_to_stars_rate', label: 'TON → Stars Rate', type: 'number' },
     { key: 'upgrade_min_value', label: 'Min Upgrade Item Value', type: 'number' },
     { key: 'max_upgrade_chance', label: 'Max Upgrade Chance %', type: 'number' },
     { key: 'min_upgrade_chance', label: 'Min Upgrade Chance %', type: 'number' },
@@ -1036,23 +1122,69 @@ function Settings() {
     { key: 'maintenance_mode', label: 'Maintenance Mode (true/false)', type: 'text' },
   ];
 
+  const tabs = [
+    { id: 'system', label: '⚙️ System' },
+    { id: 'channel', label: '📢 Channel Join' },
+    { id: 'messages', label: '💬 Start Messages' },
+  ];
+
   return (
     <div>
-      <div className="section-title mb-6">System Settings</div>
-      <Alert msg={msg} type={msg.includes('!') ? 'success' : 'error'} />
+      <div className="section-title mb-6">Settings</div>
+      <Alert msg={msg} type={msg.startsWith('✅') ? 'success' : 'error'} />
+
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+        {tabs.map(t => (
+          <button key={t.id} className={`btn ${activeTab === t.id ? 'btn-primary' : 'btn-secondary'} btn-sm`}
+            onClick={() => setActiveTab(t.id)}>{t.label}</button>
+        ))}
+      </div>
+
       {loading ? <LoadingCenter /> : (
-        <div className="card" style={{ maxWidth: 560 }}>
-          {settingsDef.map(s => (
-            <div className="form-group" key={s.key}>
-              <label className="form-label">{s.label}</label>
-              <input
-                className="form-input"
-                type={s.type}
-                value={settings[s.key] || ''}
-                onChange={e => setSettings(p => ({ ...p, [s.key]: e.target.value }))}
-              />
+        <div className="card" style={{ maxWidth: 600 }}>
+
+          {activeTab === 'system' && <>
+            {systemSettings.map(s => (
+              <div className="form-group" key={s.key}>
+                <label className="form-label">{s.label}</label>
+                <input className="form-input" type={s.type} value={settings[s.key] || ''} onChange={e => set(s.key, e.target.value)} />
+              </div>
+            ))}
+          </>}
+
+          {activeTab === 'channel' && <>
+            <div className="form-group">
+              <label className="form-label">Required Channel (@username or -100ID)</label>
+              <input className="form-input" placeholder="@yourchannel or leave empty to disable" value={settings.required_channel || ''} onChange={e => set('required_channel', e.target.value)} />
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 6 }}>Leave empty to disable channel requirement</div>
             </div>
-          ))}
+            <div className="form-group">
+              <label className="form-label">Join Channel Message (HTML)</label>
+              <textarea className="form-input" rows={4} value={settings.join_channel_text || ''} onChange={e => set('join_channel_text', e.target.value)} style={{ resize: 'vertical' }} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Subscription Success Message (HTML)</label>
+              <textarea className="form-input" rows={4} value={settings.subscription_success_text || ''} onChange={e => set('subscription_success_text', e.target.value)} style={{ resize: 'vertical' }} />
+            </div>
+          </>}
+
+          {activeTab === 'messages' && <>
+            <div className="form-group">
+              <label className="form-label">Welcome Text (HTML)</label>
+              <textarea className="form-input" rows={5} placeholder="🎁 <b>Welcome!</b>..." value={settings.welcome_text || ''} onChange={e => set('welcome_text', e.target.value)} style={{ resize: 'vertical' }} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Open App Button Text</label>
+              <input className="form-input" placeholder="🎰 Open Mini App" value={settings.open_app_button_text || ''} onChange={e => set('open_app_button_text', e.target.value)} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Extra Buttons (JSON array)</label>
+              <textarea className="form-input" rows={4} placeholder={'[{"text":"🔗 Our Website","url":"https://..."}]'} value={settings.extra_buttons || '[]'} onChange={e => set('extra_buttons', e.target.value)} style={{ resize: 'vertical', fontFamily: 'monospace', fontSize: 12 }} />
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 6 }}>JSON format: [{"{"}"text":"Button","url":"https://..."{"}"}]</div>
+            </div>
+          </>}
+
           <button className="btn btn-primary w-full" onClick={handleSave}>💾 Save Settings</button>
         </div>
       )}
@@ -1211,7 +1343,7 @@ function Login() {
 }
 
 // ========== SIDEBAR ==========
-function Sidebar() {
+function Sidebar({ open, onClose }) {
   const handleLogout = () => { localStorage.removeItem('admin_init_data'); window.location.reload(); };
   const navItems = [
     { to: '/', label: 'Dashboard', icon: '📊' },
@@ -1228,35 +1360,41 @@ function Sidebar() {
   ];
 
   return (
-    <div className="sidebar">
-      <div className="sidebar-logo">
-        <div className="sidebar-logo-icon">🎁</div>
-        <div className="sidebar-logo-text">TmuxCase</div>
+    <>
+      {open && <div className="sidebar-overlay visible" onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.6)',zIndex:199}} />}
+      <div className={`sidebar${open ? ' mobile-open' : ''}`}>
+        <div className="sidebar-logo">
+          <div className="sidebar-logo-icon">🎁</div>
+          <div className="sidebar-logo-text">TmuxCase</div>
+        </div>
+        <nav className="sidebar-nav">
+          {navItems.map((item, i) =>
+            item.section ? (
+              <div key={i} className="nav-section">{item.section}</div>
+            ) : (
+              <NavLink key={item.to} to={item.to} end={item.to === '/'} onClick={onClose} className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+                {item.icon} {item.label}
+              </NavLink>
+            )
+          )}
+        </nav>
+        <div style={{ padding: 12 }}>
+          <button className="btn btn-secondary" style={{ width: '100%', fontSize: 12 }} onClick={handleLogout}>🚪 Logout</button>
+        </div>
       </div>
-      <nav className="sidebar-nav">
-        {navItems.map((item, i) =>
-          item.section ? (
-            <div key={i} className="nav-section">{item.section}</div>
-          ) : (
-            <NavLink key={item.to} to={item.to} end={item.to === '/'} className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-              {item.icon} {item.label}
-            </NavLink>
-          )
-        )}
-      </nav>
-      <div style={{ padding: 12 }}>
-        <button className="btn btn-secondary" style={{ width: '100%', fontSize: 12 }} onClick={handleLogout}>🚪 Logout</button>
-      </div>
-    </div>
+    </>
   );
 }
 
 // ========== PAGE WRAPPER ==========
-function PageWrapper({ title, children }) {
+function PageWrapper({ title, children, onMenuOpen }) {
   return (
     <div className="main-content">
       <div className="topbar">
-        <div className="page-title">{title}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button className="hamburger" onClick={onMenuOpen}>☰</button>
+          <div className="page-title">{title}</div>
+        </div>
       </div>
       <div className="content-area">{children}</div>
     </div>
@@ -1298,20 +1436,22 @@ export default function App() {
     </>
   );
 
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
   return (
     <BrowserRouter basename="/admin">
       <style>{styles}</style>
       <div className="admin-layout">
-        <Sidebar />
+        <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
         <Routes>
-          <Route path="/" element={<PageWrapper title="Dashboard"><Dashboard /></PageWrapper>} />
-          <Route path="/users" element={<PageWrapper title="Users"><Users /></PageWrapper>} />
-          <Route path="/cases" element={<PageWrapper title="Cases"><CasesManager /></PageWrapper>} />
-          <Route path="/withdrawals" element={<PageWrapper title="Withdrawals"><Withdrawals /></PageWrapper>} />
-          <Route path="/deposits" element={<PageWrapper title="Deposits"><Deposits /></PageWrapper>} />
-          <Route path="/broadcast" element={<PageWrapper title="Broadcast"><Broadcast /></PageWrapper>} />
-          <Route path="/settings" element={<PageWrapper title="Settings"><Settings /></PageWrapper>} />
-          <Route path="/logs" element={<PageWrapper title="Logs"><Logs /></PageWrapper>} />
+          <Route path="/" element={<PageWrapper title="Dashboard" onMenuOpen={() => setSidebarOpen(true)}><Dashboard /></PageWrapper>} />
+          <Route path="/users" element={<PageWrapper title="Users" onMenuOpen={() => setSidebarOpen(true)}><Users /></PageWrapper>} />
+          <Route path="/cases" element={<PageWrapper title="Cases" onMenuOpen={() => setSidebarOpen(true)}><CasesManager /></PageWrapper>} />
+          <Route path="/withdrawals" element={<PageWrapper title="Withdrawals" onMenuOpen={() => setSidebarOpen(true)}><Withdrawals /></PageWrapper>} />
+          <Route path="/deposits" element={<PageWrapper title="Deposits" onMenuOpen={() => setSidebarOpen(true)}><Deposits /></PageWrapper>} />
+          <Route path="/broadcast" element={<PageWrapper title="Broadcast" onMenuOpen={() => setSidebarOpen(true)}><Broadcast /></PageWrapper>} />
+          <Route path="/settings" element={<PageWrapper title="Settings" onMenuOpen={() => setSidebarOpen(true)}><Settings /></PageWrapper>} />
+          <Route path="/logs" element={<PageWrapper title="Logs" onMenuOpen={() => setSidebarOpen(true)}><Logs /></PageWrapper>} />
         </Routes>
       </div>
     </BrowserRouter>
