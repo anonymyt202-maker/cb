@@ -437,9 +437,10 @@ async function updateSettings(req, res) {
       const stringValue = String(value || '');
       console.log(`[updateSettings] Setting ${key} = ${stringValue}`);
       
+      // SQLite: use INSERT OR REPLACE (since key_name is UNIQUE)
       await query(
-        `INSERT INTO settings (key_name, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?`,
-        [key, stringValue, stringValue]
+        `INSERT OR REPLACE INTO settings (key_name, value, updated_at) VALUES (?, ?, datetime('now'))`,
+        [key, stringValue]
       );
     }
     
