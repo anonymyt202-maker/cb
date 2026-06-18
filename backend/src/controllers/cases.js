@@ -316,15 +316,33 @@ async function openDailyFreeCase(req, res, caseData) {
   tomorrowStart.setDate(tomorrowStart.getDate() + 1);
 
   const existing = await queryOne(
-    `SELECT id FROM daily_free_claims 
+    `SELECT id, claimed_at FROM daily_free_claims 
      WHERE user_id = ? AND case_id = ? AND claimed_at >= ? AND claimed_at < ?`,
     [userId, caseData.id, todayStart.toISOString(), tomorrowStart.toISOString()]
   );
 
   if (existing) {
+    // Calculate exact time when user can claim again
+    const claimedTime = new Date(existing.claimed_at);
+    const nextClaimTime = new Date(claimedTime);
+    nextClaimTime.setDate(nextClaimTime.getDate() + 1);
+    
+    const now = new Date();
+    const msLeft = nextClaimTime - now;
+    const hoursLeft = Math.max(0, Math.floor(msLeft / (1000 * 60 * 60)));
+    const minutesLeft = Math.max(0, Math.floor((msLeft % (1000 * 60 * 60)) / (1000 * 60)));
+    
+    const timeStr = hoursLeft > 0 
+      ? `${hoursLeft}h ${minutesLeft}m`
+      : minutesLeft > 0 ? `${minutesLeft}m` : 'Soon';
+    
+    const claimTimeStr = nextClaimTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    
     return res.status(400).json({
-      error: 'Already claimed today. Come back tomorrow!',
-      next_at: tomorrowStart.toISOString()
+      error: `⏰ Free case already opened today!\n\nNext available in: ${timeStr}\nAvailable at: ${claimTimeStr}`,
+      next_at: nextClaimTime.toISOString(),
+      hours_left: hoursLeft,
+      minutes_left: minutesLeft
     });
   }
 
