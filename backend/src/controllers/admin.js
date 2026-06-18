@@ -337,17 +337,33 @@ async function approveDeposit(req, res) {
   try {
     const { id } = req.params;
     const { custom_stars } = req.body;
+    console.log(`[approveDeposit] Approving deposit ${id} with custom_stars: ${custom_stars}`);
+    
     const deposit = await queryOne(`SELECT * FROM deposits WHERE id = ? AND status = 'pending'`, [id]);
-    if (!deposit) return res.status(404).json({ error: 'Deposit not found' });
+    if (!deposit) {
+      console.error(`[approveDeposit] Deposit ${id} not found`);
+      return res.status(404).json({ error: 'Deposit not found' });
+    }
+    
     const starsToCredit = custom_stars && parseFloat(custom_stars) > 0 ? parseFloat(custom_stars) : parseFloat(deposit.stars_credited);
+    console.log(`[approveDeposit] Crediting ${starsToCredit} stars to user ${deposit.user_id}`);
+    
     await transaction(async (conn) => {
       await conn.execute(
-        `UPDATE deposits SET status = 'completed', admin_id = ?, processed_at = NOW(), stars_credited = ? WHERE id = ?`,
+        `UPDATE deposits SET status = 'completed', admin_id = ?, processed_at = datetime('now'), stars_credited = ? WHERE id = ?`,
         [req.user.id, starsToCredit, id]
       );
-      const bal = await queryOne(`SELECT stars_balance FROM balances WHERE user_id = ?`, [deposit.user_id]);
-      const balBefore = parseFloat(bal?.stars_balance || 0);
-      await conn.execute(`UPDATE balances SET stars_balance = stars_balance + ?, total_deposited = total_deposited + ? WHERE user_id = ?`, [starsToCredit, starsToCredit, deposit.user_id]);
+      
+      const bal = await conn.all(`SELECT stars_balance FROM balances WHERE user_id = ?`, [deposit.user_id]);
+      const balData = Array.isArray(bal) ? bal[0] : bal;
+      const balBefore = parseFloat(balData?.stars_balance || 0);
+      
+      console.log(`[approveDeposit] User ${deposit.user_id} balance before: ${balBefore}, adding ${starsToCredit}`);
+      
+      await conn.execute(
+        `UPDATE balances SET stars_balance = stars_balance + ?, total_deposited = total_deposited + ? WHERE user_id = ?`, 
+        [starsToCredit, starsToCredit, deposit.user_id]
+      );
       await conn.execute(
         `INSERT INTO transactions (user_id, type, amount, balance_before, balance_after, notes) VALUES (?, 'deposit', ?, ?, ?, 'TON deposit approved')`,
         [deposit.user_id, starsToCredit, balBefore, balBefore + starsToCredit]
@@ -356,9 +372,11 @@ async function approveDeposit(req, res) {
     const { notifyUserDepositApproved } = require('../services/bot');
     await notifyUserDepositApproved(deposit.user_id, { ...deposit, stars_credited: starsToCredit });
     await logAdminAction(req.user.id, 'approve_deposit', 'deposit', id, { stars_credited: starsToCredit });
+    console.log(`[approveDeposit] SUCCESS: Deposit ${id} approved, ${starsToCredit} stars credited to user ${deposit.user_id}`);
     res.json({ success: true, stars_credited: starsToCredit });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to approve deposit' });
+    console.error(`[approveDeposit] ERROR:`, err);
+    res.status(500).json({ error: 'Failed to approve deposit: ' + err.message });
   }
 }
 

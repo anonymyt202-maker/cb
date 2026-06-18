@@ -65,8 +65,11 @@ router.get('/user/me', authMiddleware, async (req, res) => res.json({ user: req.
 router.get('/user/balance', authMiddleware, async (req, res) => {
   try {
     const bal = await queryOne(`SELECT stars_balance FROM balances WHERE user_id = ?`, [req.user.id]);
-    res.json({ balance: parseFloat(bal?.stars_balance || 0) });
+    const balance = parseFloat(bal?.stars_balance || 0);
+    console.log(`[/user/balance] User ${req.user.id} balance: ${balance}`);
+    res.json({ balance });
   } catch (err) {
+    console.error(`[/user/balance] Error for user ${req.user.id}:`, err);
     res.status(500).json({ error: 'Failed to load balance' });
   }
 });

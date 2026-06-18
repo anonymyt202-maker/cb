@@ -45,45 +45,81 @@ async function setupBot() {
     const startParam = ctx.startPayload;
     const userId = ctx.from.id;
 
-    // Register user first (if new)
-    const userReferralCode = generateReferralCode(userId);
-    await query(
-      `INSERT OR REPLACE INTO users (id, username, first_name, last_name, referral_code, last_seen) 
-       VALUES (?, ?, ?, ?, ?, datetime('now'))`,
-      [userId, ctx.from.username || null, ctx.from.first_name, ctx.from.last_name || null, userReferralCode]
-    );
-    await query(`INSERT OR IGNORE INTO balances (user_id, stars_balance) VALUES (?, 0)`, [userId]);
+    try {
+      // Check if user exists
+      const existingUser = await queryOne(`SELECT id, referral_code FROM users WHERE id = ?`, [userId]);
+      
+      if (!existingUser) {
+        // NEW USER - Create with referral code
+        const userReferralCode = generateReferralCode(userId);
+        await query(
+          `INSERT INTO users (id, username, first_name, last_name, referral_code) 
+           VALUES (?, ?, ?, ?, ?)`,
+          [userId, ctx.from.username || null, ctx.from.first_name, ctx.from.last_name || null, userReferralCode]
+        );
+        await query(`INSERT INTO balances (user_id, stars_balance) VALUES (?, 0)`, [userId]);
+        console.log(`[/start] New user registered: ${userId}`);
+      } else {
+        // EXISTING USER - Only update profile info, keep referral_code and balance!
+        await query(
+          `UPDATE users SET username = ?, first_name = ?, last_name = ?, last_seen = datetime('now') 
+           WHERE id = ?`,
+          [ctx.from.username || null, ctx.from.first_name, ctx.from.last_name || null, userId]
+        );
+        console.log(`[/start] Existing user updated: ${userId}`);
+      }
+    } catch (err) {
+      console.error(`[/start] Error registering user:`, err);
+    }
 
+    
     // Store pending referral code (before channel join)
     if (startParam && startParam.startsWith('ref_')) {
-      await query(
-        `INSERT OR REPLACE INTO settings (key_name, value, updated_at) VALUES (?, ?, datetime('now'))`,
-        [`pending_ref_${userId}`, startParam.replace('ref_', '')]
-      ).catch(() => {});
+      try {
+        await query(
+          `INSERT OR REPLACE INTO settings (key_name, value, updated_at) VALUES (?, ?, datetime('now'))`,
+          [`pending_ref_${userId}`, startParam.replace('ref_', '')]
+        );
+      } catch (err) {
+        console.error(`[/start] Error storing pending referral:`, err);
+      }
     }
 
     // Check channel membership
-    const isMember = await checkChannelMembership(userId);
-    if (!isMember) {
-      const channelId = await getSetting('required_channel');
-      const joinText = await getSetting('join_channel_text', '⚠️ <b>Channel Subscription Required</b>\n\nTo use TmuxCaseBot you must join our channel first.');
+    try {
+      const isMember = await checkChannelMembership(userId);
+      if (!isMember) {
+        const channelId = await getSetting('required_channel');
+        const joinText = await getSetting('join_channel_text', '⚠️ <b>Channel Subscription Required</b>\n\nTo use TmuxCaseBot you must join our channel first.');
 
-      return ctx.reply(joinText, {
-        parse_mode: 'HTML',
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '📢 Join Channel', url: channelId.startsWith('@') ? `https://t.me/${channelId.replace('@', '')}` : channelId }],
-            [{ text: '✅ I Joined - Check', callback_data: 'check_subscription' }],
-          ],
-        },
-      });
+        return ctx.reply(joinText, {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '📢 Join Channel', url: channelId.startsWith('@') ? `https://t.me/${channelId.replace('@', '')}` : channelId }],
+              [{ text: '✅ I Joined - Check', callback_data: 'check_subscription' }],
+            ],
+          },
+        });
+      }
+    } catch (err) {
+      console.error(`[/start] Channel check error:`, err);
     }
 
     // Process referral (after channel join confirmed)
-    await processReferral(userId, startParam, ctx);
+    try {
+      await processReferral(userId, startParam, ctx);
+    } catch (err) {
+      console.error(`[/start] Referral process error:`, err);
+    }
 
     // Send welcome
-    await sendWelcomeMessage(ctx, userId, webAppUrl);
+    try {
+      await sendWelcomeMessage(ctx, userId, webAppUrl);
+    } catch (err) {
+      console.error(`[/start] Welcome message error:`, err);
+      await ctx.reply('Error sending welcome message. Please try again.');
+    }
   });
 
   // Check subscription callback

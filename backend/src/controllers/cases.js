@@ -230,7 +230,7 @@ async function openCase(req, res) {
       const balanceAfter = balanceBefore - parseFloat(caseData.price);
 
       await conn.execute(
-        `UPDATE balances SET stars_balance = ?, total_deposited = total_deposited WHERE user_id = ?`,
+        `UPDATE balances SET stars_balance = ? WHERE user_id = ?`,
         [balanceAfter, userId]
       );
 
@@ -285,9 +285,10 @@ async function openCase(req, res) {
       new_balance: result.balanceAfter,
       animation_rewards: shuffleRewardsForAnimation(rewards, prepareRewardForClient(selectedReward)),
     });
+    console.log(`[openCase] SUCCESS: User ${userId} opened case ${id}, new balance: ${result.balanceAfter}`);
   } catch (err) {
-    console.error('openCase error:', err);
-    res.status(500).json({ error: 'Failed to open case' });
+    console.error(`[openCase] ERROR for user ${userId}, case ${id}:`, err);
+    res.status(500).json({ error: 'Failed to open case: ' + err.message });
   }
 }
 
@@ -354,6 +355,8 @@ async function openDailyFreeCase(req, res, caseData) {
   const selectedReward = prepareRewardForClient(selectReward(rewards));
 
   const result = await transaction(async (conn) => {
+    console.log(`[openDailyFreeCase] Starting transaction for user ${userId}, case ${caseData.id}`);
+    
     await conn.execute(
       `INSERT INTO daily_free_claims (user_id, case_id, expires_at) VALUES (?, ?, ?)`,
       [userId, caseData.id, tomorrowStart.toISOString()]
@@ -361,16 +364,21 @@ async function openDailyFreeCase(req, res, caseData) {
 
     let inventoryId = null;
     if (selectedReward.reward_type === 'stars') {
-      const bal = await queryOne(`SELECT stars_balance FROM balances WHERE user_id = ?`, [userId]);
+      const bal = await conn.all(`SELECT stars_balance FROM balances WHERE user_id = ?`, [userId]);
+      const balData = Array.isArray(bal) ? bal[0] : bal;
+      const currentBalance = parseFloat(balData?.stars_balance || 0);
       const starsWon = parseFloat(selectedReward.stars_amount);
+      
+      console.log(`[openDailyFreeCase] Adding ${starsWon} stars to user ${userId}, current: ${currentBalance}`);
+      
       await conn.execute(
         `UPDATE balances SET stars_balance = stars_balance + ?, total_won = total_won + ? WHERE user_id = ?`,
         [starsWon, starsWon, userId]
       );
       await conn.execute(
         `INSERT INTO transactions (user_id, type, amount, balance_before, balance_after, notes)
-         VALUES (?, 'case_open', ?, ?, ?, 'Daily free case win')`,
-        [userId, starsWon, bal.stars_balance, parseFloat(bal.stars_balance) + starsWon]
+         VALUES (?, 'case_open', ?, ?, ?, ?)`,
+        [userId, starsWon, currentBalance, currentBalance + starsWon, `Daily free case win: ${selectedReward.name}`]
       );
     } else {
       const invResult = await conn.execute(
@@ -379,8 +387,11 @@ async function openDailyFreeCase(req, res, caseData) {
       );
       inventoryId = ensureInventoryId(invResult);
       if (!inventoryId) {
+        console.error(`[openDailyFreeCase] Failed to get inventory ID from insert result:`, invResult);
         throw new Error('Inventory insert failed: could not determine inventory id');
       }
+      console.log(`[openDailyFreeCase] Added inventory ${inventoryId} for user ${userId}`);
+      
       await conn.execute(
         `INSERT INTO inventory_history (inventory_id, user_id, action, notes) VALUES (?, ?, 'obtained', ?)`,
         [inventoryId, userId, `Won from daily free case: ${caseData.name}`]
@@ -392,6 +403,7 @@ async function openDailyFreeCase(req, res, caseData) {
       [userId, caseData.id, selectedReward.id, inventoryId]
     );
 
+    console.log(`[openDailyFreeCase] Transaction completed for user ${userId}`);
     return { selectedReward: prepareRewardForClient(selectedReward), inventoryId };
   });
 
