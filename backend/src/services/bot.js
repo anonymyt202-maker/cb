@@ -48,15 +48,16 @@ async function setupBot() {
     // Register user first (if new)
     const userReferralCode = generateReferralCode(userId);
     await query(
-      `INSERT INTO users (id, username, first_name, last_name, referral_code) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE username=VALUES(username), first_name=VALUES(first_name), last_name=VALUES(last_name), last_seen=NOW()`,
+      `INSERT OR REPLACE INTO users (id, username, first_name, last_name, referral_code, last_seen) 
+       VALUES (?, ?, ?, ?, ?, datetime('now'))`,
       [userId, ctx.from.username || null, ctx.from.first_name, ctx.from.last_name || null, userReferralCode]
     );
-    await query(`INSERT IGNORE INTO balances (user_id, stars_balance) VALUES (?, 0)`, [userId]);
+    await query(`INSERT OR IGNORE INTO balances (user_id, stars_balance) VALUES (?, 0)`, [userId]);
 
     // Store pending referral code (before channel join)
     if (startParam && startParam.startsWith('ref_')) {
       await query(
-        `INSERT INTO settings (key_name, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value=VALUES(value)`,
+        `INSERT OR REPLACE INTO settings (key_name, value, updated_at) VALUES (?, ?, datetime('now'))`,
         [`pending_ref_${userId}`, startParam.replace('ref_', '')]
       ).catch(() => {});
     }
@@ -196,7 +197,7 @@ async function processReferral(userId, startParam, ctx) {
 
   await transaction(async (conn) => {
     await conn.execute(
-      `INSERT IGNORE INTO referrals (referrer_id, referred_id, reward_given) VALUES (?, ?, ?)`,
+      `INSERT OR IGNORE INTO referrals (referrer_id, referred_id, reward_given) VALUES (?, ?, ?)`,
       [referrer.id, userId, rewardStars]
     );
     if (rewardStars > 0) {
