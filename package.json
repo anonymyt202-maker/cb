@@ -1,0 +1,27 @@
+{
+  "name": "tmuxcasebot",
+  "version": "3.0.0",
+  "description": "TMUX Case Bot - NFT Cases, Gifts, Games",
+  "private": true,
+  "scripts": {
+    "install:all": "npm install && cd frontend && npm install && cd ../backend && npm install && cd ../admin && npm install",
+    "start": "concurrently \"npm run start:backend\" \"npm run start:frontend\" \"npm run start:admin\"",
+    "start:backend": "cd backend && npm start",
+    "start:frontend": "cd frontend && npm start",
+    "start:admin": "cd admin && npm start",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\" \"npm run dev:admin\"",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm start",
+    "dev:admin": "cd admin && npm start",
+    "build": "npm run build:frontend && npm run build:admin && npm run build:backend",
+    "build:frontend": "cd frontend && npm run build",
+    "build:admin": "cd admin && npm run build",
+    "build:backend": "cd backend && npm run build || true"
+  },
+  "keywords": ["case", "bot", "telegram", "nft", "games"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.0"
+  }
+}
