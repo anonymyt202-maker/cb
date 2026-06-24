@@ -159,7 +159,7 @@ async function authMiddleware(req, res, next) {
     }
 
     if (user.is_banned) {
-      return res.status(403).json({ error: 'Account is banned' });
+      return res.status(403).json({ error: 'Account is banned', banned: true });
     }
 
     req.user = user;

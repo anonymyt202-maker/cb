@@ -110,6 +110,24 @@ async function requestWithdrawal(req, res) {
       return res.status(400).json({ error: 'Stars rewards cannot be withdrawn this way' });
     }
 
+    // Talab: gift/NFT yechib olish uchun foydalanuvchi kamida N (default 10) Stars
+    // depozit qilgan bo'lishi kerak. Bu nakrutka/bot hisoblarini cheklash uchun.
+    const minDepositSetting = await queryOne(
+      `SELECT value FROM settings WHERE key_name = 'min_withdrawal_stars_deposited'`
+    );
+    const minDeposit = parseFloat(minDepositSetting?.value ?? 10);
+    if (minDeposit > 0) {
+      const bal = await queryOne(`SELECT total_deposited FROM balances WHERE user_id = ?`, [userId]);
+      const totalDeposited = parseFloat(bal?.total_deposited || 0);
+      if (totalDeposited < minDeposit) {
+        return res.status(400).json({
+          error: `To withdraw gifts/NFTs you must deposit at least ${minDeposit} ⭐ first.`,
+          required_deposit: minDeposit,
+          current_deposit: totalDeposited,
+        });
+      }
+    }
+
     // Check for pending withdrawal
     const pending = await queryOne(
       `SELECT id FROM withdrawals WHERE inventory_id = ? AND status = 'pending'`,
@@ -125,10 +143,11 @@ async function requestWithdrawal(req, res) {
         [inventory_id]
       );
 
-      const [wResult] = await conn.execute(
+      const wResult = await conn.execute(
         `INSERT INTO withdrawals (user_id, inventory_id, status) VALUES (?, ?, 'pending')`,
         [userId, inventory_id]
       );
+      const withdrawalId = extractInsertId(wResult);
 
       await conn.execute(
         `INSERT INTO inventory_history (inventory_id, user_id, action, notes) VALUES (?, ?, 'withdrawn', 'Withdrawal requested')`,
@@ -137,7 +156,7 @@ async function requestWithdrawal(req, res) {
 
       // Notify admins via bot
       const { notifyAdminWithdrawal } = require('../services/bot');
-      await notifyAdminWithdrawal(wResult.insertId, req.user, item);
+      await notifyAdminWithdrawal(withdrawalId, req.user, item);
     });
 
     res.json({ success: true, message: 'Withdrawal request submitted. Admin will process it soon.' });
@@ -145,6 +164,24 @@ async function requestWithdrawal(req, res) {
     console.error('requestWithdrawal error:', err);
     res.status(500).json({ error: 'Failed to request withdrawal' });
   }
+}
+
+function extractInsertId(result) {
+  if (result == null) return null;
+  if (typeof result === 'number') return result;
+  if (Array.isArray(result)) {
+    for (const item of result) {
+      const id = extractInsertId(item);
+      if (id != null) return id;
+    }
+    return null;
+  }
+  if (typeof result === 'object') {
+    if (result.insertId != null) return result.insertId;
+    if (result.lastInsertRowid != null) return result.lastInsertRowid;
+    if (result[0] != null) return extractInsertId(result[0]);
+  }
+  return null;
 }
 
 module.exports = { getInventory, sellItem, requestWithdrawal };

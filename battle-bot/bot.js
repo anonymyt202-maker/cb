@@ -12,6 +12,11 @@ const ADMIN_IDS    = (process.env.ADMIN_IDS || '')
   .map(id => id.trim())
   .filter(Boolean);
 
+// TmuxCaseBot Mini App'iga havola (asosiy case-opening ilovasi). Bu battle
+// bot — TmuxCase platformasining bir qismi sifatida ishlaydi, shu sababli
+// /start javobida foydalanuvchiga asosiy ilovani ochish imkonini ham beradi.
+const TMUXCASE_WEBAPP_URL = process.env.TMUXCASE_WEBAPP_URL || process.env.WEBAPP_URL || 'https://your-domain.com';
+
 if (!BOT_TOKEN || !BOT_USERNAME) {
   console.error('❌ .env faylida BOT_TOKEN va BOT_USERNAME bo\'lishi kerak!');
   process.exit(1);
@@ -293,8 +298,17 @@ bot.start(async (ctx) => {
     `👋 Salom, <b>${ctx.from.first_name}</b>!\n\n` +
     `🏆 <b>Ovoz Battle Bot</b>ga xush kelibsiz!\n\n` +
     `Battle yarating va do'stlaringiz bilan raqobatlashing!`,
-    { parse_mode: 'HTML', ...mainMenu() }
+    {
+      parse_mode: 'HTML',
+      reply_markup: Markup.inlineKeyboard([
+        [
+          Markup.button.webApp('📱 Open App', TMUXCASE_WEBAPP_URL),
+          Markup.button.callback('🆕 Create Battle', 'create_battle'),
+        ],
+      ]).reply_markup,
+    }
   );
+  await ctx.reply('⬇️ Pastdagi menyudan foydalanishingiz mumkin:', mainMenu());
 });
 
 // ============================================================
@@ -478,7 +492,7 @@ bot.action(/^chk_join_(.+)$/, async (ctx) => {
 // ============================================================
 //                  MAIN MENU HANDLERS
 // ============================================================
-bot.hears('🏆 Battle yaratish', async (ctx) => {
+async function startBattleCreation(ctx) {
   const user = getUser(ctx);
   if (user.banned) return ctx.reply('🚫 Siz ban qilingansiz.');
 
@@ -488,6 +502,14 @@ bot.hears('🏆 Battle yaratish', async (ctx) => {
     `📝 Battle matnini kiriting (sovrin nomi):\n\nMisol:\n• 🥇 Top 1 ga gift\n• 🎁 100 Stars\n• 🏆 Premium 1 oy`,
     { parse_mode: 'HTML', ...cancelMenu() }
   );
+}
+
+bot.hears('🏆 Battle yaratish', startBattleCreation);
+
+// Inline "🆕 Create Battle" tugmasi (/start xabaridagi) — xuddi shu oqimni boshlaydi
+bot.action('create_battle', async (ctx) => {
+  await ctx.answerCbQuery();
+  await startBattleCreation(ctx);
 });
 
 bot.hears('📋 Battlelarim', async (ctx) => {

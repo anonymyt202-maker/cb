@@ -1,438 +1,1937 @@
-import React, { useState, useEffect } from 'react';
-import { adminApi } from 'utils/api';
-import './App.css';
+import React, { useState, useEffect, createContext, useContext } from 'react';
+import { BrowserRouter, Routes, Route, NavLink, useNavigate } from 'react-router-dom';
+import axios from 'axios';
 
-const TABS = {
-  DASHBOARD: 'dashboard',
-  USERS: 'users',
-  CASES: 'cases',
-  REWARDS: 'rewards',
-  NFT: 'nft',
-  PROMO: 'promo',
-  WITHDRAWALS: 'withdrawals',
-  DEPOSITS: 'deposits',
-  BROADCAST: 'broadcast',
-  SETTINGS: 'settings',
-};
+// ========== API ==========
+const BASE = process.env.REACT_APP_API_URL || '/api';
+const api = axios.create({ baseURL: BASE, timeout: 15000 });
+api.interceptors.request.use(cfg => {
+  cfg.headers = cfg.headers || {};
+  Object.assign(cfg.headers, getAdminAuthHeaders());
+  return cfg;
+});
+api.interceptors.response.use(r => r, e => Promise.reject(new Error(e.response?.data?.error || 'Request failed')));
 
-function CaseRewardForm({ caseId, reward = null, onSave, onCancel }) {
-  const [formData, setFormData] = useState(reward || { reward_type: 'gift', rarity: 'common', chance: 10, value: 10 });
-  const [uploading, setUploading] = useState(false);
+const ADMIN_IDS = new Set(
+  String(process.env.REACT_APP_ADMIN_IDS || '')
+    .split(',')
+    .map(v => v.trim())
+    .filter(Boolean)
+    .map(v => Number.parseInt(v, 10))
+    .filter(Number.isFinite)
+);
 
-  const handleImageUpload = async (file, type = 'gifts') => {
-    const fd = new FormData();
-    fd.append('image', file);
-    fd.append('type', type);
-    try {
-      setUploading(true);
-      const res = await fetch('/api/admin/upload', { method: 'POST', body: fd });
-      const data = await res.json();
-      if (data.success) setFormData(prev => ({ ...prev, image_url: data.url }));
-    } catch (err) {
-      alert('Upload failed: ' + err.message);
-    } finally {
-      setUploading(false);
+const ADMIN_USERNAMES = new Set(
+  String(process.env.REACT_APP_ADMIN_USERNAMES || '')
+    .split(',')
+    .map(v => v.trim().toLowerCase())
+    .filter(Boolean)
+);
+
+const BROWSER_ADMIN_KEY = Array.from(ADMIN_IDS)[0] ? String(Array.from(ADMIN_IDS)[0]) : '';
+
+function getAdminAuthHeaders() {
+  const headers = {};
+  const tg = getTelegramWebApp();
+  const tgInitData = tg?.initData || '';
+  if (tgInitData) {
+    headers['X-Init-Data'] = tgInitData;
+    return headers;
+  }
+
+  if (BROWSER_ADMIN_KEY) {
+    headers['X-Admin-Key'] = BROWSER_ADMIN_KEY;
+    return headers;
+  }
+
+  const stored = localStorage.getItem('admin_init_data') || '';
+  if (stored) headers['X-Init-Data'] = stored;
+  return headers;
+}
+
+function getTelegramWebApp() {
+  try {
+    return window.Telegram?.WebApp || null;
+  } catch {
+    return null;
+  }
+}
+
+function syncAdminInitData() {
+  try {
+    const tg = getTelegramWebApp();
+    const initData = tg?.initData || '';
+    if (initData && initData.length > 0) {
+      localStorage.setItem('admin_init_data', initData);
+      return initData;
     }
-  };
+  } catch {}
+  return localStorage.getItem('admin_init_data') || '';
+}
 
-  const handleSave = async () => {
-    if (!formData.name || !formData.case_id) {
-      alert('Name and case required');
+function isAllowedAdminUser(user) {
+  if (!user?.id) return false;
+  const idOk = ADMIN_IDS.size === 0 || ADMIN_IDS.has(Number(user.id));
+  const username = String(user.username || '').trim().toLowerCase();
+  const usernameOk = ADMIN_USERNAMES.size === 0 || (username && ADMIN_USERNAMES.has(username));
+  return idOk && usernameOk;
+}
+
+
+function MediaPreview({ source, alt = '', size = 72, fit = 'contain' }) {
+  const [resolved, setResolved] = useState(null);
+  const [kind, setKind] = useState('image');
+
+  useEffect(() => {
+    let mounted = true;
+    const value = String(source || '').trim();
+    if (!value) {
+      setResolved(null);
       return;
     }
-    try {
-      if (reward?.id) {
-        await adminApi.updateReward(reward.id, { ...formData, case_id: caseId });
-      } else {
-        await adminApi.createReward({ ...formData, case_id: caseId });
-      }
-      onSave();
-    } catch (err) {
-      alert('Error: ' + err.message);
-    }
-  };
 
+    const isPlainEmoji = value.length <= 4 && !/^https?:\/\//i.test(value) && !/^[A-Za-z0-9_-]{20,}$/.test(value);
+    if (isPlainEmoji) {
+      setResolved(value);
+      setKind('emoji');
+      return;
+    }
+
+    const direct = /^https?:\/\//i.test(value) && !/^https?:\/\/(?:t\.me|telegram\.me)\//i.test(value);
+    if (direct) {
+      setResolved(value);
+      setKind(/\.(webm|mp4|mov)$/i.test(value) ? 'video' : 'image');
+      return;
+    }
+
+    api.get('/media/resolve', { params: { source: value } })
+      .then(r => {
+        if (!mounted) return;
+        setResolved(r.data?.url || null);
+        setKind(r.data?.kind || 'image');
+      })
+      .catch(() => {
+        if (mounted) {
+          setResolved(null);
+          setKind('image');
+        }
+      });
+
+    return () => { mounted = false; };
+  }, [source]);
+
+  if (!source) return null;
+  if (kind === 'emoji') {
+    return <div style={{ width: size, height: size, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size * 0.55 }}>{resolved}</div>;
+  }
+  if (!resolved) {
+    return <div style={{ width: size, height: size, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: size * 0.55, background: 'rgba(255,255,255,0.05)' }}>🖼️</div>;
+  }
+
+  if (kind === 'video') {
+    return <video src={resolved} autoPlay loop muted playsInline style={{ width: size, height: size, objectFit: fit, borderRadius: 14 }} />;
+  }
+
+  return <img src={resolved} alt={alt} style={{ width: size, height: size, objectFit: fit, borderRadius: 14 }} />;
+}
+
+// ========== AUTH CONTEXT ==========
+const AuthCtx = createContext(null);
+function useAuth() { return useContext(AuthCtx); }
+
+// ========== STYLES ==========
+const styles = `
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{font-family:'Inter',sans-serif;background:#0d0d14;color:#fff;min-height:100vh;}
+  ::-webkit-scrollbar{width:6px;} ::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:3px;}
+  .admin-layout{display:flex;min-height:100vh;}
+  .sidebar{width:240px;background:#111118;border-right:1px solid rgba(255,255,255,0.07);flex-shrink:0;display:flex;flex-direction:column;position:fixed;top:0;left:0;height:100vh;overflow-y:auto;z-index:100;}
+  .sidebar-logo{padding:24px 20px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(255,255,255,0.07);}
+  .sidebar-logo-icon{width:36px;height:36px;background:linear-gradient(135deg,#4f8ef7,#7c3aed);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;}
+  .sidebar-logo-text{font-size:16px;font-weight:800;}
+  .sidebar-nav{padding:12px 10px;flex:1;}
+  .nav-link{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;font-size:13px;font-weight:600;color:rgba(255,255,255,0.5);text-decoration:none;transition:all .2s;margin-bottom:2px;}
+  .nav-link:hover{background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.85);}
+  .nav-link.active{background:rgba(79,142,247,0.15);color:#4f8ef7;border:1px solid rgba(79,142,247,0.25);}
+  .nav-section{font-size:10px;font-weight:700;color:rgba(255,255,255,0.2);text-transform:uppercase;letter-spacing:1px;padding:12px 12px 6px;}
+  .main-content{flex:1;margin-left:240px;min-height:100vh;}
+  .topbar{background:#111118;border-bottom:1px solid rgba(255,255,255,0.07);padding:16px 28px;display:flex;align-items:center;justify-content:space-between;}
+  .page-title{font-size:20px;font-weight:800;}
+  .content-area{padding:28px;}
+  .card{background:#161621;border:1px solid rgba(255,255,255,0.07);border-radius:16px;padding:20px;}
+  .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:28px;}
+  .stat-card{background:#161621;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:18px 20px;}
+  .stat-num{font-size:28px;font-weight:900;background:linear-gradient(135deg,#4f8ef7,#7c3aed);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
+  .stat-lbl{font-size:12px;color:rgba(255,255,255,0.4);margin-top:4px;font-weight:600;}
+  .table{width:100%;border-collapse:collapse;}
+  .table th{text-align:left;font-size:11px;font-weight:700;color:rgba(255,255,255,0.3);text-transform:uppercase;letter-spacing:.5px;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,0.07);}
+  .table td{padding:13px 16px;font-size:13px;border-bottom:1px solid rgba(255,255,255,0.05);}
+  .table tr:last-child td{border-bottom:none;}
+  .table tr:hover td{background:rgba(255,255,255,0.02);}
+  .badge{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;}
+  .badge-green{background:rgba(16,185,129,.15);color:#10b981;}
+  .badge-yellow{background:rgba(245,158,11,.15);color:#f59e0b;}
+  .badge-red{background:rgba(239,68,68,.15);color:#ef4444;}
+  .badge-blue{background:rgba(79,142,247,.15);color:#4f8ef7;}
+  .badge-purple{background:rgba(139,92,246,.15);color:#8b5cf6;}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 16px;border-radius:10px;font-size:13px;font-weight:700;border:none;cursor:pointer;transition:all .2s;}
+  .btn:active{transform:scale(.96);}
+  .btn:disabled{opacity:.5;cursor:not-allowed;}
+  .btn-primary{background:linear-gradient(135deg,#4f8ef7,#7c3aed);color:#fff;}
+  .btn-secondary{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);color:#fff;}
+  .btn-success{background:linear-gradient(135deg,#10b981,#059669);color:#fff;}
+  .btn-danger{background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;}
+  .btn-sm{padding:6px 12px;font-size:12px;}
+  .form-group{margin-bottom:16px;}
+  .form-label{font-size:12px;font-weight:700;color:rgba(255,255,255,.4);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;display:block;}
+  .form-input{width:100%;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:11px 14px;font-size:14px;color:#fff;outline:none;transition:border .2s;font-family:inherit;}
+  .form-input:focus{border-color:#4f8ef7;}
+  .form-input::placeholder{color:rgba(255,255,255,.25);}
+  select.form-input option{background:#1a1a28;}
+  .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.8);backdrop-filter:blur(6px);z-index:500;display:flex;align-items:center;justify-content:center;padding:20px;}
+  .modal-box{background:#161621;border:1px solid rgba(255,255,255,.1);border-radius:20px;padding:24px;width:100%;max-width:480px;max-height:90vh;overflow-y:auto;}
+  .modal-title{font-size:18px;font-weight:800;margin-bottom:20px;}
+  .flex{display:flex;} .gap-2{gap:8px;} .gap-3{gap:12px;} .gap-4{gap:16px;}
+  .items-center{align-items:center;} .justify-between{justify-content:space-between;} .flex-1{flex:1;}
+  .mb-2{margin-bottom:8px;} .mb-4{margin-bottom:16px;} .mb-6{margin-bottom:24px;}
+  .text-sm{font-size:13px;} .text-xs{font-size:11px;} .text-muted{color:rgba(255,255,255,.4);}
+  .text-right{text-align:right;} .w-full{width:100%;}
+  .spinner{width:20px;height:20px;border:2px solid rgba(255,255,255,.15);border-top-color:#4f8ef7;border-radius:50%;animation:spin .7s linear infinite;display:inline-block;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .loading-center{display:flex;align-items:center;justify-content:center;padding:60px;gap:12px;color:rgba(255,255,255,.4);font-size:14px;}
+  .search-input{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:10px 14px;font-size:14px;color:#fff;outline:none;font-family:inherit;width:100%;max-width:300px;}
+  .search-input::placeholder{color:rgba(255,255,255,.25);}
+  .pagination{display:flex;align-items:center;gap:8px;margin-top:16px;}
+  .page-btn{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:6px 12px;font-size:13px;color:#fff;cursor:pointer;font-weight:600;}
+  .page-btn.active{background:rgba(79,142,247,.25);border-color:rgba(79,142,247,.4);color:#4f8ef7;}
+  .alert{padding:12px 16px;border-radius:10px;font-size:13px;font-weight:600;margin-bottom:16px;}
+  .alert-error{background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.25);color:#ef4444;}
+  .alert-success{background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.25);color:#10b981;}
+  .section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;}
+  .section-title{font-size:17px;font-weight:800;}
+  .divider{height:1px;background:rgba(255,255,255,.07);margin:20px 0;}
+  .hamburger{display:none;background:none;border:none;cursor:pointer;padding:8px;color:#fff;font-size:22px;}
+  @media (max-width:768px){.sidebar{transform:translateX(-100%);transition:transform .25s;z-index:200;}.sidebar.mobile-open{transform:translateX(0);}.main-content{margin-left:0!important;}.topbar{padding:12px 16px;}.content-area{padding:16px;}.hamburger{display:flex;align-items:center;}.stat-grid{grid-template-columns:1fr 1fr;}.table-responsive{overflow-x:auto;}.table th,.table td{padding:10px 12px;font-size:12px;}.modal-box{padding:18px;}.card{padding:16px;}.page-title{font-size:17px;}.hide-mobile{display:none!important;}}
+  @media (max-width:480px){.stat-grid{grid-template-columns:1fr;}.section-header{flex-direction:column;align-items:flex-start;gap:10px;}}
+`;
+
+// ========== HELPERS ==========
+function Badge({ status }) {
+  const map = {
+    completed: 'badge-green', approved: 'badge-green', active: 'badge-green', win: 'badge-green',
+    pending: 'badge-yellow',
+    rejected: 'badge-red', banned: 'badge-red', lose: 'badge-red',
+    normal: 'badge-blue', roulette: 'badge-purple', daily_free: 'badge-green', referral: 'badge-blue',
+  };
+  return <span className={`badge ${map[status] || 'badge-blue'}`}>{status}</span>;
+}
+
+function Spinner() { return <div className="spinner" />; }
+function LoadingCenter() { return <div className="loading-center"><Spinner /> Loading...</div>; }
+
+function Modal({ title, onClose, children }) {
   return (
-    <div className="form-modal">
-      <div className="form-modal-content">
-        <h3>{reward ? 'Edit Reward' : 'New Reward'}</h3>
-        <div className="form-group">
-          <label>Type</label>
-          <select value={formData.reward_type} onChange={e => setFormData(prev => ({ ...prev, reward_type: e.target.value }))}>
-            <option value="gift">Gift</option>
-            <option value="nft">NFT</option>
-            <option value="stars">Stars</option>
-          </select>
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-box" onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-4">
+          <div className="modal-title" style={{ margin: 0 }}>{title}</div>
+          <button className="btn btn-secondary btn-sm" onClick={onClose}>✕</button>
         </div>
-        <div className="form-group">
-          <label>Name</label>
-          <input value={formData.name || ''} onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))} placeholder="Reward name" />
-        </div>
-        {formData.reward_type === 'stars' ? (
-          <div className="form-group">
-            <label>Stars Amount</label>
-            <input type="number" value={formData.stars_amount || 0} onChange={e => setFormData(prev => ({ ...prev, stars_amount: parseFloat(e.target.value) }))} />
-          </div>
-        ) : (
-          <>
-            <div className="form-group">
-              <label>Rarity</label>
-              <select value={formData.rarity || 'common'} onChange={e => setFormData(prev => ({ ...prev, rarity: e.target.value }))}>
-                <option value="common">Common</option>
-                <option value="rare">Rare</option>
-                <option value="epic">Epic</option>
-                <option value="legendary">Legendary</option>
-              </select>
-            </div>
-            <div className="form-group">
-              <label>Value (Stars)</label>
-              <input type="number" value={formData.value || 0} onChange={e => setFormData(prev => ({ ...prev, value: parseFloat(e.target.value) }))} />
-            </div>
-          </>
-        )}
-        <div className="form-group">
-          <label>Chance (%)</label>
-          <input type="number" value={formData.chance || 10} onChange={e => setFormData(prev => ({ ...prev, chance: parseFloat(e.target.value) }))} min="0" max="100" />
-        </div>
-        <div className="form-group">
-          <label>Image URL</label>
-          <input value={formData.image_url || ''} onChange={e => setFormData(prev => ({ ...prev, image_url: e.target.value }))} placeholder="https://..." />
-          <input type="file" accept="image/*" onChange={e => e.target.files[0] && handleImageUpload(e.target.files[0])} disabled={uploading} />
-          {uploading && <small>Uploading...</small>}
-        </div>
-        <div className="form-group">
-          <label>Gift Emoji / Icon</label>
-          <input value={formData.gift_emoji || ''} onChange={e => setFormData(prev => ({ ...prev, gift_emoji: e.target.value }))} placeholder="e.g., 🎁" />
-        </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button className="btn btn-primary" onClick={handleSave}>Save</button>
-          <button className="btn btn-secondary" onClick={onCancel}>Cancel</button>
-        </div>
+        {children}
       </div>
     </div>
   );
 }
 
-function PromoCodForm({ onSave, onCancel }) {
-  const [cases, setCases] = useState([]);
-  const [formData, setFormData] = useState({ code: '', case_id: '', stars_required: 0, max_uses: 0 });
+function Alert({ msg, type = 'error' }) {
+  if (!msg) return null;
+  return <div className={`alert alert-${type}`}>{msg}</div>;
+}
+
+// ========== DASHBOARD ==========
+function Dashboard() {
+  const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    adminApi.getCases().then(d => { setCases(d.cases || []); setLoading(false); }).catch(() => setLoading(false));
+    api.get('/admin/dashboard').then(r => setStats(r.data)).finally(() => setLoading(false));
   }, []);
 
-  const handleCreate = async () => {
-    if (!formData.code || !formData.case_id) { alert('Code and case required'); return; }
-    try {
-      await adminApi.createPromoCode(formData);
-      onSave();
-    } catch (err) {
-      alert('Error: ' + err.message);
-    }
-  };
+  if (loading) return <LoadingCenter />;
 
-  if (loading) return <div>Loading...</div>;
+  const statCards = [
+    { label: 'Total Users', value: stats?.total_users?.toLocaleString(), icon: '👥' },
+    { label: 'Total Deposits', value: `${parseFloat(stats?.total_deposits || 0).toLocaleString()} ⭐`, icon: '💰' },
+    { label: 'Case Opens', value: stats?.total_case_opens?.toLocaleString(), icon: '🎁' },
+    { label: 'Upgrades', value: stats?.total_upgrades?.toLocaleString(), icon: '⚡' },
+    { label: 'Pending Withdrawals', value: stats?.pending_withdrawals, icon: '⏳', warn: stats?.pending_withdrawals > 0 },
+    { label: 'Pending Deposits', value: stats?.pending_deposits, icon: '💎', warn: stats?.pending_deposits > 0 },
+  ];
 
   return (
-    <div className="form-modal">
-      <div className="form-modal-content">
-        <h3>Create Promo Code</h3>
-        <div className="form-group">
-          <label>Code (uppercase)</label>
-          <input value={formData.code} onChange={e => setFormData(prev => ({ ...prev, code: e.target.value.toUpperCase() }))} placeholder="PROMO2024" />
-        </div>
-        <div className="form-group">
-          <label>Case</label>
-          <select value={formData.case_id} onChange={e => setFormData(prev => ({ ...prev, case_id: e.target.value }))}>
-            <option value="">Select case...</option>
-            {cases.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-        </div>
-        <div className="form-group">
-          <label>Stars Required (0 = free)</label>
-          <input type="number" value={formData.stars_required} onChange={e => setFormData(prev => ({ ...prev, stars_required: parseInt(e.target.value) }))} min="0" />
-        </div>
-        <div className="form-group">
-          <label>Max Uses (0 = unlimited)</label>
-          <input type="number" value={formData.max_uses} onChange={e => setFormData(prev => ({ ...prev, max_uses: parseInt(e.target.value) }))} min="0" />
-        </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button className="btn btn-primary" onClick={handleCreate}>Create</button>
-          <button className="btn btn-secondary" onClick={onCancel}>Cancel</button>
-        </div>
+    <div>
+      <div className="stat-grid">
+        {statCards.map(s => (
+          <div key={s.label} className="stat-card" style={s.warn ? { borderColor: 'rgba(245,158,11,.35)' } : {}}>
+            <div style={{ fontSize: 24, marginBottom: 8 }}>{s.icon}</div>
+            <div className="stat-num" style={s.warn ? { background: 'none', WebkitTextFillColor: '#f59e0b', color: '#f59e0b' } : {}}>{s.value}</div>
+            <div className="stat-lbl">{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="card">
+        <div className="section-title mb-4">Recent Activity</div>
+        <table className="table">
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Case</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(stats?.recent_activity || []).map((a, i) => (
+              <tr key={i}>
+                <td>{a.first_name}{a.username ? ` @${a.username}` : ''}</td>
+                <td>{a.case_name}</td>
+                <td className="text-muted text-sm">{new Date(a.created_at).toLocaleString()}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
 }
 
-function BroadcastStarsModal({ onClose, onRefresh }) {
-  const [amount, setAmount] = useState(5);
-  const [reason, setReason] = useState('Admin bonus');
-  const [loading, setLoading] = useState(false);
+// ========== USERS ==========
+function Users() {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [selectedUser, setSelectedUser] = useState(null);
+  const [balanceModal, setBalanceModal] = useState(null);
+  const [balAmount, setBalAmount] = useState('');
+  const [balReason, setBalReason] = useState('');
+  const [actionMsg, setActionMsg] = useState('');
 
-  const handleSend = async () => {
-    if (!amount || amount <= 0) { alert('Valid amount required'); return; }
+  const load = async () => {
     setLoading(true);
     try {
-      const result = await adminApi.broadcastStars({ amount: parseInt(amount), reason });
-      alert(`✅ ${result.credited} users received ${amount} ⭐`);
-      onRefresh();
-      onClose();
-    } catch (err) {
-      alert('Error: ' + err.message);
+      const r = await api.get('/admin/users', { params: { search, page, limit: 20 } });
+      setUsers(r.data.users);
+      setTotal(r.data.total);
+    } catch (e) {
+      setActionMsg(e.message);
     } finally {
       setLoading(false);
     }
   };
 
+  useEffect(() => { load(); }, [page]);
+
+  const handleBan = async (user) => {
+    if (!window.confirm(`${user.is_banned ? 'Unban' : 'Ban'} ${user.first_name}?`)) return;
+    try {
+      if (user.is_banned) await api.post(`/admin/users/${user.id}/unban`);
+      else await api.post(`/admin/users/${user.id}/ban`);
+      load();
+    } catch (e) { setActionMsg(e.message); }
+  };
+
+  const handleAdjustBalance = async () => {
+    if (!balAmount) return;
+    try {
+      await api.post(`/admin/users/${balanceModal.id}/balance`, { amount: parseFloat(balAmount), reason: balReason });
+      setBalanceModal(null); setBalAmount(''); setBalReason('');
+      setActionMsg('Balance adjusted!');
+      load();
+    } catch (e) { setActionMsg(e.message); }
+  };
+
   return (
-    <div className="form-modal">
-      <div className="form-modal-content">
-        <h3>🌟 Broadcast Stars</h3>
-        <p style={{ color: 'rgba(255,255,255,0.6)' }}>Give stars to all users (except banned)</p>
-        <div className="form-group">
-          <label>Amount per user (⭐)</label>
-          <input type="number" value={amount} onChange={e => setAmount(parseInt(e.target.value))} min="1" />
-        </div>
-        <div className="form-group">
-          <label>Reason (shown in transactions)</label>
-          <textarea value={reason} onChange={e => setReason(e.target.value)} placeholder="Admin bonus, event reward, etc." rows={3} />
-        </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button className="btn btn-gold" onClick={handleSend} disabled={loading}>
-            {loading ? 'Sending...' : `Send ${amount} ⭐ to All`}
-          </button>
-          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+    <div>
+      <div className="section-header">
+        <div className="section-title">Users</div>
+        <div className="flex gap-2">
+          <input className="search-input" placeholder="Search by name, username, ID..." value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => e.key === 'Enter' && load()} />
+          <button className="btn btn-primary" onClick={load}>Search</button>
         </div>
       </div>
+
+      <Alert msg={actionMsg} type={actionMsg.includes('!') ? 'success' : 'error'} />
+
+      <div className="card">
+        {loading ? <LoadingCenter /> : (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>User</th><th>Balance</th><th>Deposited</th><th>Status</th><th>Joined</th><th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map(u => (
+                <tr key={u.id}>
+                  <td>
+                    <div style={{ fontWeight: 700 }}>{u.first_name} {u.last_name || ''}</div>
+                    <div className="text-xs text-muted">{u.username ? `@${u.username}` : `ID: ${u.id}`}</div>
+                  </td>
+                  <td style={{ color: '#f59e0b', fontWeight: 700 }}>{parseFloat(u.stars_balance || 0).toLocaleString()} ⭐</td>
+                  <td className="text-muted">{parseFloat(u.total_deposited || 0).toLocaleString()} ⭐</td>
+                  <td>
+                    {u.is_banned ? <Badge status="banned" /> : <Badge status="active" />}
+                    {u.is_admin && <Badge status="admin" />}
+                  </td>
+                  <td className="text-sm text-muted">{new Date(u.created_at).toLocaleDateString()}</td>
+                  <td>
+                    <div className="flex gap-2">
+                      <button className="btn btn-secondary btn-sm" onClick={() => setSelectedUser(u)}>View</button>
+                      <button className="btn btn-secondary btn-sm" onClick={() => setBalanceModal(u)}>💰</button>
+                      <button className={`btn btn-sm ${u.is_banned ? 'btn-success' : 'btn-danger'}`} onClick={() => handleBan(u)}>
+                        {u.is_banned ? 'Unban' : 'Ban'}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <div className="pagination">
+          <span className="text-sm text-muted">Total: {total}</span>
+          {page > 1 && <button className="page-btn" onClick={() => setPage(p => p - 1)}>← Prev</button>}
+          <span className="page-btn active">{page}</span>
+          {users.length === 20 && <button className="page-btn" onClick={() => setPage(p => p + 1)}>Next →</button>}
+        </div>
+      </div>
+
+      {selectedUser && (
+        <Modal title={`${selectedUser.first_name}'s Profile`} onClose={() => setSelectedUser(null)}>
+          <div className="text-sm">
+            <div className="mb-2"><b>ID:</b> {selectedUser.id}</div>
+            <div className="mb-2"><b>Username:</b> @{selectedUser.username || 'N/A'}</div>
+            <div className="mb-2"><b>Balance:</b> {parseFloat(selectedUser.stars_balance || 0).toLocaleString()} ⭐</div>
+            <div className="mb-2"><b>Total Deposited:</b> {parseFloat(selectedUser.total_deposited || 0).toLocaleString()} ⭐</div>
+            <div className="mb-2"><b>Referral Code:</b> {selectedUser.referral_code}</div>
+            <div className="mb-2"><b>Status:</b> {selectedUser.is_banned ? '🚫 Banned' : '✅ Active'}</div>
+            <div className="mb-2"><b>Joined:</b> {new Date(selectedUser.created_at).toLocaleString()}</div>
+          </div>
+        </Modal>
+      )}
+
+      {balanceModal && (
+        <Modal title={`Adjust Balance — ${balanceModal.first_name}`} onClose={() => setBalanceModal(null)}>
+          <div className="form-group">
+            <label className="form-label">Amount (positive to add, negative to deduct)</label>
+            <input className="form-input" type="number" placeholder="e.g. 100 or -50" value={balAmount} onChange={e => setBalAmount(e.target.value)} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Reason</label>
+            <input className="form-input" placeholder="Admin bonus, correction, etc." value={balReason} onChange={e => setBalReason(e.target.value)} />
+          </div>
+          <div className="flex gap-2">
+            <button className="btn btn-secondary flex-1" onClick={() => setBalanceModal(null)}>Cancel</button>
+            <button className="btn btn-primary flex-1" onClick={handleAdjustBalance}>Apply</button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
 
-function NFTManagementSection() {
-  const [nfts, setNfts] = useState([]);
+// ========== CASES MANAGEMENT ==========
+function CasesManager() {
+  const [cases, setCases] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [editingNFT, setEditingNFT] = useState(null);
-  const [formData, setFormData] = useState({ name: '', description: '', value: 100, rarity: 'rare', image_url: '', metadata: {} });
-  const [uploading, setUploading] = useState(false);
+  const [editCase, setEditCase] = useState(null);
+  const [rewardsCase, setRewardsCase] = useState(null);
+  const [msg, setMsg] = useState('');
+  const [form, setForm] = useState({
+    name: '', description: '', image_url: '', price: 0,
+    case_type: 'normal', referrals_required: 0, task_type: 'none',
+    task_value: '', task_min_referrals: 0, win_chance: 50, sort_order: 0, is_active: true,
+  });
 
-  useEffect(() => {
-    // In a real implementation, fetch NFTs from API
-    // For now, we'll load from rewards with type 'nft'
-  }, []);
+  const load = () => {
+    api.get('/admin/cases').then(r => setCases(r.data.cases)).finally(() => setLoading(false));
+  };
 
-  const handleImageUpload = async (file) => {
-    const fd = new FormData();
-    fd.append('image', file);
-    fd.append('type', 'nfts');
-    try {
-      setUploading(true);
-      const res = await fetch('/api/admin/upload', { method: 'POST', body: fd });
-      const data = await res.json();
-      if (data.success) setFormData(prev => ({ ...prev, image_url: data.url }));
-    } catch (err) {
-      alert('Upload failed: ' + err.message);
-    } finally {
-      setUploading(false);
-    }
+  useEffect(() => { load(); }, []);
+
+  const openCreate = () => {
+    setEditCase(null);
+    setForm({ name: '', description: '', image_url: '', price: 0, case_type: 'normal', referrals_required: 0, task_type: 'none', task_value: '', task_min_referrals: 0, win_chance: 50, sort_order: 0, is_active: true });
+    setShowForm(true);
+  };
+
+  const openEdit = (c) => {
+    setEditCase(c);
+    setForm({ ...c });
+    setShowForm(true);
   };
 
   const handleSave = async () => {
-    if (!formData.name) { alert('Name required'); return; }
-    // Save NFT (in a real app, would call API)
-    // For now, just close the form
-    setShowForm(false);
-    setFormData({ name: '', description: '', value: 100, rarity: 'rare', image_url: '', metadata: {} });
-  };
-
-  return (
-    <div className="section">
-      <div className="section-header">
-        <h2>🖼️ NFT Management</h2>
-        <button className="btn btn-primary" onClick={() => { setEditingNFT(null); setShowForm(true); }}>+ New NFT</button>
-      </div>
-
-      {showForm && (
-        <div className="form-modal">
-          <div className="form-modal-content">
-            <h3>{editingNFT ? 'Edit NFT' : 'Create NFT'}</h3>
-            <div className="form-group">
-              <label>NFT Name</label>
-              <input value={formData.name} onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))} placeholder="NFT name" />
-            </div>
-            <div className="form-group">
-              <label>Description</label>
-              <textarea value={formData.description} onChange={e => setFormData(prev => ({ ...prev, description: e.target.value }))} placeholder="NFT description" rows={3} />
-            </div>
-            <div className="form-group">
-              <label>Value (Stars)</label>
-              <input type="number" value={formData.value} onChange={e => setFormData(prev => ({ ...prev, value: parseInt(e.target.value) }))} />
-            </div>
-            <div className="form-group">
-              <label>Rarity</label>
-              <select value={formData.rarity} onChange={e => setFormData(prev => ({ ...prev, rarity: e.target.value }))}>
-                <option value="common">Common</option>
-                <option value="rare">Rare</option>
-                <option value="epic">Epic</option>
-                <option value="legendary">Legendary</option>
-              </select>
-            </div>
-            <div className="form-group">
-              <label>Image</label>
-              <input value={formData.image_url} onChange={e => setFormData(prev => ({ ...prev, image_url: e.target.value }))} placeholder="https://..." />
-              <input type="file" accept="image/*" onChange={e => e.target.files[0] && handleImageUpload(e.target.files[0])} disabled={uploading} />
-            </div>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button className="btn btn-primary" onClick={handleSave}>Save</button>
-              <button className="btn btn-secondary" onClick={() => setShowForm(false)}>Cancel</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div style={{ marginTop: 16 }}>
-        <p style={{ color: 'rgba(255,255,255,0.4)' }}>NFTs will be created as Case Rewards with type 'nft'</p>
-        <p style={{ color: 'rgba(255,255,255,0.3)', fontSize: 12 }}>Use the Rewards section to add NFTs to cases</p>
-      </div>
-    </div>
-  );
-}
-
-function PromoCodeSection() {
-  const [promoCodes, setPromoCodes] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
-
-  useEffect(() => { loadPromoCodes(); }, []);
-
-  const loadPromoCodes = async () => {
     try {
-      const data = await adminApi.getPromoCodes();
-      setPromoCodes(data.promo_codes || []);
-      setLoading(false);
-    } catch (err) {
-      alert('Error: ' + err.message);
-      setLoading(false);
-    }
+      if (editCase) await api.put(`/admin/cases/${editCase.id}`, form);
+      else await api.post('/admin/cases', form);
+      setShowForm(false);
+      setMsg('Case saved!');
+      load();
+    } catch (e) { setMsg(e.message); }
   };
 
   const handleDelete = async (id) => {
-    if (!window.confirm('Delete this promo code?')) return;
+    if (!window.confirm('Delete this case?')) return;
     try {
-      await adminApi.deletePromoCode(id);
-      loadPromoCodes();
-    } catch (err) {
-      alert('Error: ' + err.message);
-    }
+      await api.delete(`/admin/cases/${id}`);
+      setMsg('Case deleted!');
+      load();
+    } catch (e) { setMsg(e.message); }
   };
 
-  if (loading) return <div>Loading...</div>;
-
   return (
-    <div className="section">
+    <div>
       <div className="section-header">
-        <h2>🎟️ Promo Codes</h2>
-        <button className="btn btn-primary" onClick={() => setShowForm(true)}>+ New Code</button>
+        <div className="section-title">Cases</div>
+        <button className="btn btn-primary" onClick={openCreate}>+ New Case</button>
       </div>
-
-      {showForm && <PromoCodForm onSave={() => { setShowForm(false); loadPromoCodes(); }} onCancel={() => setShowForm(false)} />}
-
-      <div style={{ marginTop: 16 }}>
-        {promoCodes.length === 0 ? (
-          <p style={{ color: 'rgba(255,255,255,0.4)' }}>No promo codes yet</p>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {promoCodes.map(promo => (
-              <div key={promo.id} style={{ background: 'rgba(255,255,255,0.04)', borderRadius: 8, padding: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div>
-                  <div style={{ fontWeight: 700 }}>{promo.code}</div>
-                  <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)' }}>{promo.case_name}</div>
-                  <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 4 }}>
-                    {promo.stars_required > 0 && `${promo.stars_required}⭐ | `}
-                    Used: {promo.used_count}/{promo.max_uses || '∞'}
-                  </div>
-                </div>
-                <button className="btn btn-secondary" onClick={() => handleDelete(promo.id)}>Delete</button>
-              </div>
-            ))}
-          </div>
+      <Alert msg={msg} type={msg.includes('!') ? 'success' : 'error'} />
+      <div className="card">
+        {loading ? <LoadingCenter /> : (
+          <table className="table">
+            <thead><tr><th>Name</th><th>Type</th><th>Price</th><th>Rewards</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody>
+              {cases.map(c => (
+                <tr key={c.id}>
+                  <td>
+                    <div style={{ fontWeight: 700 }}>{c.name}</div>
+                    {c.image_url && <div className="text-xs text-muted">Has image</div>}
+                  </td>
+                  <td><Badge status={c.case_type} /></td>
+                  <td style={{ color: '#f59e0b', fontWeight: 700 }}>
+                    {c.case_type === 'daily_free' || c.case_type === 'referral' ? 'FREE' : `${parseFloat(c.price).toLocaleString()} ⭐`}
+                  </td>
+                  <td>{c.reward_count} rewards</td>
+                  <td><Badge status={c.is_active ? 'active' : 'inactive'} /></td>
+                  <td>
+                    <div className="flex gap-2">
+                      <button className="btn btn-secondary btn-sm" onClick={() => setRewardsCase(c)}>Rewards</button>
+                      <button className="btn btn-secondary btn-sm" onClick={() => openEdit(c)}>Edit</button>
+                      <button className="btn btn-danger btn-sm" onClick={() => handleDelete(c.id)}>Del</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
+
+      {showForm && (
+        <Modal title={editCase ? 'Edit Case' : 'Create Case'} onClose={() => setShowForm(false)}>
+          {['name', 'description'].map(f => (
+            <div className="form-group" key={f}>
+              <label className="form-label">{f.replace('_', ' ')}</label>
+              <input className="form-input" placeholder={f} value={form[f] || ''} onChange={e => setForm(p => ({ ...p, [f]: e.target.value }))} />
+            </div>
+          ))}
+          <div className="form-group">
+            <label className="form-label">Image</label>
+            <input type="file" accept="image/*" id="case-img-upload" style={{ display: 'none' }}
+              onChange={async e => {
+                const file = e.target.files?.[0]; if (!file) return;
+                const fd = new FormData(); fd.append('image', file);
+                try {
+                  const r = await api.post('/admin/upload?type=cases', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+                  setForm(p => ({ ...p, image_url: r.data.url }));
+                } catch(err) { alert('Upload failed: ' + err.message); }
+              }} />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <label htmlFor="case-img-upload" className="btn btn-secondary btn-sm" style={{ cursor: 'pointer' }}>📎 Upload</label>
+              <input className="form-input" placeholder="or paste URL / t.me link" style={{ flex: 1 }}
+                value={form.image_url || ''} onChange={e => setForm(p => ({ ...p, image_url: e.target.value }))} />
+            </div>
+            {form.image_url && (
+              <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+                <img src={form.image_url.startsWith('/uploads/') ? `${(process.env.REACT_APP_API_URL||'/api').replace('/api','')}${form.image_url}` : form.image_url} alt="preview" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 10 }} onError={e => e.target.style.display='none'} />
+                <button className="btn btn-danger btn-sm" onClick={() => setForm(p => ({ ...p, image_url: '' }))}>✕</button>
+              </div>
+            )}
+          </div>
+          <div className="form-group">
+            <label className="form-label">Case Type</label>
+            <select className="form-input" value={form.case_type} onChange={e => setForm(p => ({ ...p, case_type: e.target.value }))}>
+              <option value="normal">Normal</option>
+              <option value="roulette">Roulette</option>
+              <option value="daily_free">Daily Free</option>
+              <option value="referral">Referral (24h)</option>
+              <option value="demo">Demo (not added to inventory)</option>
+              <option value="promo">Promo Code (managed in Promo Codes tab)</option>
+            </select>
+          </div>
+          {(form.case_type === 'normal' || form.case_type === 'roulette') && (
+            <div className="form-group">
+              <label className="form-label">Price (Stars)</label>
+              <input className="form-input" type="number" min="0" value={form.price} onChange={e => setForm(p => ({ ...p, price: e.target.value }))} />
+            </div>
+          )}
+          {form.case_type === 'roulette' && (
+            <div className="form-group">
+              <label className="form-label">Win Chance (%)</label>
+              <input className="form-input" type="number" min="0.1" max="99.9" step="0.1" value={form.win_chance} onChange={e => setForm(p => ({ ...p, win_chance: e.target.value }))} />
+            </div>
+          )}
+          {form.case_type === 'referral' && (
+            <div className="form-group">
+              <label className="form-label">Referrals Required</label>
+              <input className="form-input" type="number" min="1" value={form.referrals_required} onChange={e => setForm(p => ({ ...p, referrals_required: e.target.value }))} />
+              <div className="text-xs text-muted" style={{ marginTop: 6 }}>Resets daily at 00:00 (GMT+5).</div>
+            </div>
+          )}
+          {form.case_type === 'demo' && (
+            <div className="form-group">
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', background: 'rgba(255,255,255,0.04)', padding: 10, borderRadius: 10 }}>
+                🎬 Demo case: free to open, rewards are NOT added to inventory and cannot be sold/withdrawn.
+                Rare reward chances are automatically boosted for a more exciting preview
+                (see Settings → demo_case_chance_boost).
+              </div>
+            </div>
+          )}
+          {form.case_type === 'promo' && (
+            <div className="form-group">
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.5)', background: 'rgba(255,255,255,0.04)', padding: 10, borderRadius: 10 }}>
+                🎟️ Promo case: not shown in the regular case list. Create one or more promo codes
+                for it in the "Promo Codes" tab — each code can require e.g. a minimum Stars deposit,
+                and resets daily at 00:00 (GMT+5) per user.
+              </div>
+            </div>
+          )}
+          {form.case_type === 'daily_free' && (
+            <>
+              <div className="form-group">
+                <label className="form-label">Task Type</label>
+                <select className="form-input" value={form.task_type} onChange={e => setForm(p => ({ ...p, task_type: e.target.value }))}>
+                  <option value="none">No Task (Free)</option>
+                  <option value="channel_sub">Channel Subscription</option>
+                  <option value="referrals">Minimum Referrals</option>
+                </select>
+              </div>
+              {form.task_type === 'channel_sub' && (
+                <div className="form-group">
+                  <label className="form-label">Channel Username (e.g. @mychannel)</label>
+                  <input className="form-input" placeholder="@channel" value={form.task_value} onChange={e => setForm(p => ({ ...p, task_value: e.target.value }))} />
+                </div>
+              )}
+              {form.task_type === 'referrals' && (
+                <div className="form-group">
+                  <label className="form-label">Min Referrals Required</label>
+                  <input className="form-input" type="number" min="1" value={form.task_min_referrals} onChange={e => setForm(p => ({ ...p, task_min_referrals: e.target.value }))} />
+                </div>
+              )}
+            </>
+          )}
+          <div className="form-group">
+            <label className="form-label">Sort Order</label>
+            <input className="form-input" type="number" value={form.sort_order} onChange={e => setForm(p => ({ ...p, sort_order: e.target.value }))} />
+          </div>
+          <div className="form-group flex items-center gap-2">
+            <input type="checkbox" id="active" checked={form.is_active} onChange={e => setForm(p => ({ ...p, is_active: e.target.checked }))} />
+            <label htmlFor="active" className="form-label" style={{ margin: 0 }}>Active</label>
+          </div>
+          <div className="flex gap-2">
+            <button className="btn btn-secondary flex-1" onClick={() => setShowForm(false)}>Cancel</button>
+            <button className="btn btn-primary flex-1" onClick={handleSave}>Save Case</button>
+          </div>
+        </Modal>
+      )}
+
+      {rewardsCase && <RewardsManager caseData={rewardsCase} onClose={() => { setRewardsCase(null); load(); }} />}
     </div>
   );
 }
 
-export default function AdminApp() {
-  const [activeTab, setActiveTab] = useState(TABS.DASHBOARD);
-  const [userData, setUserData] = useState(null);
+// ========== REWARDS MANAGER ==========
+function RewardsManager({ caseData, onClose }) {
+  const [rewards, setRewards] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editReward, setEditReward] = useState(null);
+  const [msg, setMsg] = useState('');
+  const GIFT_EMOJIS = ['🧸','💝','🎁','🌹','🎂','💐','🍾','🚀','💎','🏆'];
+  const [form, setForm] = useState({ case_id: caseData.id, reward_type: 'gift', name: '', image_url: '', gift_emoji: '🎁', stars_amount: 0, value: 0, rarity: 'common', chance: 10, is_active: true });
+  const [nftLibrary, setNftLibrary] = useState([]);
+  const [showNftPicker, setShowNftPicker] = useState(false);
 
   useEffect(() => {
-    // Check if user is admin
-    const initData = window.Telegram?.WebApp?.initData || '';
-    if (!initData) {
-      alert('Please open this app via Telegram bot');
-      window.location.href = '/';
-    }
+    api.get('/admin/nfts').then(r => setNftLibrary((r.data.nfts || []).filter(n => n.is_active))).catch(() => {});
   }, []);
 
+  const load = () => {
+    api.get(`/admin/cases/${caseData.id}/rewards`).then(r => setRewards(r.data.rewards)).finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, []);
+
+  const openCreate = () => {
+    setEditReward(null);
+    setForm({ case_id: caseData.id, reward_type: 'gift', name: '', image_url: '', gift_emoji: '🎁', stars_amount: 0, value: 0, rarity: 'common', chance: 10, is_active: true });
+    setShowForm(true);
+  };
+
+  const handleSave = async () => {
+    try {
+      if (editReward) await api.put(`/admin/rewards/${editReward.id}`, form);
+      else await api.post('/admin/rewards', form);
+      setShowForm(false);
+      setMsg('Reward saved!');
+      load();
+    } catch (e) { setMsg(e.message); }
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('Delete reward?')) return;
+    try {
+      await api.delete(`/admin/rewards/${id}`);
+      setMsg('Deleted!');
+      load();
+    } catch (e) { setMsg(e.message); }
+  };
+
+  const totalChance = rewards.reduce((s, r) => s + parseFloat(r.chance || 0), 0);
+
   return (
-    <div className="admin-app">
-      <div className="admin-header">
-        <div className="admin-logo">🎁 TMUX Admin</div>
-        <div className="admin-nav">
-          {Object.entries(TABS).map(([key, value]) => (
-            <button
-              key={value}
-              className={`nav-btn ${activeTab === value ? 'active' : ''}`}
-              onClick={() => setActiveTab(value)}
-            >
-              {key.replace(/_/g, ' ')}
+    <Modal title={`Rewards — ${caseData.name}`} onClose={onClose}>
+      <Alert msg={msg} type={msg.includes('!') ? 'success' : 'error'} />
+      <div style={{ marginBottom: 12, fontSize: 13, color: totalChance > 100 ? '#ef4444' : totalChance === 100 ? '#10b981' : '#f59e0b', fontWeight: 700 }}>
+        Total chance: {totalChance.toFixed(2)}% {totalChance !== 100 && '(should equal 100%)'}
+      </div>
+
+      <div style={{ maxHeight: 260, overflowY: 'auto', marginBottom: 14 }}>
+        {loading ? <LoadingCenter /> : rewards.map(r => (
+          <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+            <div style={{ fontSize: 28 }}>{r.gift_emoji ? <MediaPreview source={r.gift_emoji} alt={r.name} size={28} /> : (r.reward_type === 'stars' ? '⭐' : '🖼️')}</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 700 }}>{r.name}</div>
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>
+                <span className={`badge ${r.rarity === 'legendary' ? 'badge-yellow' : r.rarity === 'epic' ? 'badge-purple' : r.rarity === 'rare' ? 'badge-blue' : 'badge-blue'}`} style={{ fontSize: 9 }}>{r.rarity}</span>
+                {' '}{r.chance}% chance {r.value > 0 && `· ${r.value} ⭐ val`}
+              </div>
+            </div>
+            <button className="btn btn-secondary btn-sm" onClick={() => { setEditReward(r); setForm({ ...r }); setShowForm(true); }}>Edit</button>
+            <button className="btn btn-danger btn-sm" onClick={() => handleDelete(r.id)}>✕</button>
+          </div>
+        ))}
+      </div>
+
+      <button className="btn btn-primary w-full" onClick={openCreate}>+ Add Reward</button>
+
+      {showForm && (
+        <div style={{ marginTop: 16, padding: 16, background: 'rgba(255,255,255,0.03)', borderRadius: 12, border: '1px solid rgba(255,255,255,0.08)' }}>
+          <div style={{ fontWeight: 700, marginBottom: 12 }}>{editReward ? 'Edit Reward' : 'New Reward'}</div>
+          <div className="form-group">
+            <label className="form-label">Type</label>
+            <select className="form-input" value={form.reward_type} onChange={e => setForm(p => ({ ...p, reward_type: e.target.value }))}>
+              <option value="gift">Gift</option>
+              <option value="nft">NFT</option>
+              <option value="stars">Stars</option>
+            </select>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Name</label>
+            <input className="form-input" placeholder="Reward name" value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} />
+          </div>
+          {form.reward_type === 'gift' && (
+            <div className="form-group">
+              <label className="form-label">Gift Emoji</label>
+              <div className="flex gap-2" style={{ flexWrap: 'wrap' }}>
+                {GIFT_EMOJIS.map(e => (
+                  <div key={e} onClick={() => setForm(p => ({ ...p, gift_emoji: e }))}
+                    style={{ width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, borderRadius: 10, cursor: 'pointer', background: form.gift_emoji === e ? 'rgba(79,142,247,0.25)' : 'rgba(255,255,255,0.05)', border: form.gift_emoji === e ? '2px solid #4f8ef7' : '2px solid transparent' }}>
+                    {e}
+                  </div>
+                ))}
+              </div>
+              <div className="form-group" style={{ marginTop: 10 }}>
+                <label className="form-label">Custom Gift Emoji / Sticker file_id</label>
+                <input className="form-input" placeholder="Paste emoji, file_id, or t.me link" value={form.gift_emoji} onChange={e => setForm(p => ({ ...p, gift_emoji: e.target.value }))} />
+                {form.gift_emoji && form.gift_emoji.startsWith('/uploads/') ? (
+                  <div style={{ marginTop: 8 }}>
+                    <img src={`${(process.env.REACT_APP_API_URL||'/api').replace('/api','')}${form.gift_emoji}`} alt="preview" style={{ width: 64, height: 64, objectFit: 'contain', borderRadius: 10 }} />
+                  </div>
+                ) : form.gift_emoji && form.gift_emoji.length <= 4 ? (
+                  <div style={{ marginTop: 8, fontSize: 40 }}>{form.gift_emoji}</div>
+                ) : null}
+              </div>
+            </div>
+          )}
+          {form.reward_type === 'nft' && (
+            <div className="form-group">
+              <label className="form-label">NFT Image</label>
+              {nftLibrary.length > 0 && (
+                <div style={{ marginBottom: 10 }}>
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowNftPicker(s => !s)}>
+                    🖼️ Pick from NFT library ({nftLibrary.length})
+                  </button>
+                  {showNftPicker && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginTop: 8, maxHeight: 220, overflowY: 'auto', padding: 8, background: 'rgba(255,255,255,0.03)', borderRadius: 10 }}>
+                      {nftLibrary.map(n => (
+                        <div key={n.id} style={{ cursor: 'pointer', textAlign: 'center' }}
+                          onClick={() => {
+                            setForm(p => ({ ...p, name: n.name, image_url: n.image_url, value: n.value, rarity: n.rarity }));
+                            setShowNftPicker(false);
+                          }}>
+                          <img src={n.image_url?.startsWith('/uploads/') ? `${(process.env.REACT_APP_API_URL||'/api').replace('/api','')}${n.image_url}` : n.image_url} alt={n.name} style={{ width: '100%', height: 56, objectFit: 'cover', borderRadius: 8 }} onError={e => e.target.style.opacity=0.2} />
+                          <div style={{ fontSize: 10, marginTop: 4, color: 'rgba(255,255,255,0.7)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{n.name}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              <input type="file" accept="image/*" id="nft-img-upload" style={{ display: 'none' }}
+                onChange={async e => {
+                  const file = e.target.files?.[0]; if (!file) return;
+                  const fd = new FormData(); fd.append('image', file);
+                  try {
+                    const r = await api.post('/admin/upload?type=nfts', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+                    setForm(p => ({ ...p, image_url: r.data.url }));
+                  } catch(err) { alert('Upload failed: ' + err.message); }
+                }} />
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <label htmlFor="nft-img-upload" className="btn btn-secondary btn-sm" style={{ cursor: 'pointer' }}>📎 Upload</label>
+                <input className="form-input" placeholder="or paste URL / t.me link" style={{ flex: 1 }}
+                  value={form.image_url || ''} onChange={e => setForm(p => ({ ...p, image_url: e.target.value }))} />
+              </div>
+              {form.image_url && (
+                <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <img src={form.image_url.startsWith('/uploads/') ? `${(process.env.REACT_APP_API_URL||'/api').replace('/api','')}${form.image_url}` : form.image_url} alt="preview" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 10 }} onError={e => e.target.style.display='none'} />
+                  <button className="btn btn-danger btn-sm" onClick={() => setForm(p => ({ ...p, image_url: '' }))}>✕</button>
+                </div>
+              )}
+            </div>
+          )}
+          {form.reward_type === 'stars' ? (
+            <div className="form-group">
+              <label className="form-label">Stars Amount</label>
+              <input className="form-input" type="number" min="1" value={form.stars_amount} onChange={e => setForm(p => ({ ...p, stars_amount: e.target.value }))} />
+            </div>
+          ) : (
+            <div className="form-group">
+              <label className="form-label">Value (Stars)</label>
+              <input className="form-input" type="number" min="0" value={form.value} onChange={e => setForm(p => ({ ...p, value: e.target.value }))} />
+            </div>
+          )}
+          <div className="form-group">
+            <label className="form-label">Rarity</label>
+            <select className="form-input" value={form.rarity} onChange={e => setForm(p => ({ ...p, rarity: e.target.value }))}>
+              <option value="common">Common</option>
+              <option value="rare">Rare</option>
+              <option value="epic">Epic</option>
+              <option value="legendary">Legendary</option>
+            </select>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Chance % (remaining: {(100 - totalChance + (editReward ? parseFloat(editReward.chance) : 0)).toFixed(2)}%)</label>
+            <input className="form-input" type="number" min="0.01" max="100" step="0.01" value={form.chance} onChange={e => setForm(p => ({ ...p, chance: e.target.value }))} />
+          </div>
+          <div className="flex gap-2">
+            <button className="btn btn-secondary flex-1" onClick={() => setShowForm(false)}>Cancel</button>
+            <button className="btn btn-primary flex-1" onClick={handleSave}>Save</button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// ========== NFT LIBRARY MANAGER ==========
+// Talab: "admin panelda NFT degan joy qo'sh o'sha yerda nft lar qo'sha olaman
+// va case ochishda shu nftlarni tanlab yarataman"
+function NftManager() {
+  const [nfts, setNfts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editNft, setEditNft] = useState(null);
+  const [msg, setMsg] = useState('');
+  const [form, setForm] = useState({ name: '', image_url: '', value: 0, rarity: 'common', is_active: true });
+
+  const load = () => {
+    setLoading(true);
+    api.get('/admin/nfts').then(r => setNfts(r.data.nfts || [])).finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, []);
+
+  const openCreate = () => {
+    setEditNft(null);
+    setForm({ name: '', image_url: '', value: 0, rarity: 'common', is_active: true });
+    setShowForm(true);
+  };
+
+  const handleSave = async () => {
+    if (!form.name?.trim()) { setMsg('Name is required'); return; }
+    try {
+      if (editNft) await api.put(`/admin/nfts/${editNft.id}`, form);
+      else await api.post('/admin/nfts', form);
+      setShowForm(false);
+      setMsg('NFT saved!');
+      load();
+    } catch (e) { setMsg(e.message); }
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('Remove this NFT from the library?')) return;
+    try {
+      await api.delete(`/admin/nfts/${id}`);
+      setMsg('Removed!');
+      load();
+    } catch (e) { setMsg(e.message); }
+  };
+
+  if (loading) return <Spinner />;
+
+  return (
+    <div>
+      <div className="flex justify-between items-center" style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.5)' }}>
+          🖼️ Global NFT library — add NFTs here once, then pick them when creating case rewards.
+        </div>
+        <button className="btn btn-primary" onClick={openCreate}>+ New NFT</button>
+      </div>
+      {msg && <div className="alert" style={{ marginBottom: 12 }}>{msg}</div>}
+
+      <div className="card" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 14 }}>
+        {nfts.length === 0 && <div style={{ color: 'rgba(255,255,255,0.4)', padding: 20 }}>No NFTs yet. Click "+ New NFT" to add one.</div>}
+        {nfts.map(n => (
+          <div key={n.id} style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 12, padding: 10, opacity: n.is_active ? 1 : 0.4 }}>
+            <div style={{ width: '100%', height: 90, borderRadius: 8, overflow: 'hidden', background: 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              {n.image_url ? (
+                <img src={n.image_url.startsWith('/uploads/') ? `${(process.env.REACT_APP_API_URL||'/api').replace('/api','')}${n.image_url}` : n.image_url} alt={n.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={e => e.target.style.display='none'} />
+              ) : <span style={{ fontSize: 32 }}>🖼️</span>}
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 700, marginTop: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{n.name}</div>
+            <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>
+              <span className={`badge ${n.rarity === 'legendary' ? 'badge-yellow' : n.rarity === 'epic' ? 'badge-purple' : 'badge-blue'}`} style={{ fontSize: 9 }}>{n.rarity}</span>
+              {' '}{n.value} ⭐
+            </div>
+            <div className="flex gap-2" style={{ marginTop: 8 }}>
+              <button className="btn btn-secondary btn-sm flex-1" onClick={() => { setEditNft(n); setForm({ ...n, is_active: !!n.is_active }); setShowForm(true); }}>Edit</button>
+              <button className="btn btn-danger btn-sm" onClick={() => handleDelete(n.id)}>✕</button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {showForm && (
+        <Modal title={editNft ? 'Edit NFT' : 'New NFT'} onClose={() => setShowForm(false)}>
+          <div className="form-group">
+            <label className="form-label">Name</label>
+            <input className="form-input" value={form.name} onChange={e => setForm(p => ({ ...p, name: e.target.value }))} placeholder="e.g. Golden Star NFT" />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Image</label>
+            <input type="file" accept="image/*" id="nft-lib-upload" style={{ display: 'none' }}
+              onChange={async e => {
+                const file = e.target.files?.[0]; if (!file) return;
+                const fd = new FormData(); fd.append('image', file);
+                try {
+                  const r = await api.post('/admin/upload?type=nfts', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+                  setForm(p => ({ ...p, image_url: r.data.url }));
+                } catch (err) { alert('Upload failed: ' + err.message); }
+              }} />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <label htmlFor="nft-lib-upload" className="btn btn-secondary btn-sm" style={{ cursor: 'pointer' }}>📎 Upload</label>
+              <input className="form-input" placeholder="or paste URL / t.me link" style={{ flex: 1 }}
+                value={form.image_url || ''} onChange={e => setForm(p => ({ ...p, image_url: e.target.value }))} />
+            </div>
+            {form.image_url && (
+              <div style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
+                <img src={form.image_url.startsWith('/uploads/') ? `${(process.env.REACT_APP_API_URL||'/api').replace('/api','')}${form.image_url}` : form.image_url} alt="preview" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 10 }} onError={e => e.target.style.display='none'} />
+                <button className="btn btn-danger btn-sm" onClick={() => setForm(p => ({ ...p, image_url: '' }))}>✕</button>
+              </div>
+            )}
+          </div>
+          <div className="form-group">
+            <label className="form-label">Value (⭐ equivalent, used for rarity/upgrade math)</label>
+            <input className="form-input" type="number" min="0" value={form.value} onChange={e => setForm(p => ({ ...p, value: e.target.value }))} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Rarity</label>
+            <select className="form-input" value={form.rarity} onChange={e => setForm(p => ({ ...p, rarity: e.target.value }))}>
+              <option value="common">Common</option>
+              <option value="rare">Rare</option>
+              <option value="epic">Epic</option>
+              <option value="legendary">Legendary</option>
+            </select>
+          </div>
+          <div className="form-group flex items-center gap-2">
+            <input type="checkbox" id="nft-active" checked={form.is_active} onChange={e => setForm(p => ({ ...p, is_active: e.target.checked }))} />
+            <label htmlFor="nft-active" className="form-label" style={{ margin: 0 }}>Active (visible in picker)</label>
+          </div>
+          <div className="flex gap-2">
+            <button className="btn btn-secondary flex-1" onClick={() => setShowForm(false)}>Cancel</button>
+            <button className="btn btn-primary flex-1" onClick={handleSave}>Save NFT</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ========== PROMO CODES MANAGER ==========
+// Talab: "case turi promocode case . Admin promo yaratadi ular promoni
+// ishlatib ochadilar admin promo case ni ochish uchun shart qo'yadi
+// misol 10 stars kiritib ocha oladi bu ham 24 soatda yangilanadi"
+function PromoCodesManager() {
+  const [promos, setPromos] = useState([]);
+  const [cases, setCases] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [form, setForm] = useState({ code: '', case_id: '', requirement_type: 'none', requirement_value: 0, max_uses: 0 });
+
+  const load = () => {
+    setLoading(true);
+    Promise.all([
+      api.get('/admin/promo-codes').then(r => setPromos(r.data.promo_codes || [])),
+      api.get('/admin/cases').then(r => setCases((r.data.cases || []).filter(c => c.case_type === 'promo'))),
+    ]).finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, []);
+
+  const openCreate = () => {
+    setForm({ code: '', case_id: cases[0]?.id || '', requirement_type: 'none', requirement_value: 0, max_uses: 0 });
+    setShowForm(true);
+  };
+
+  const handleSave = async () => {
+    if (!form.case_id) { setMsg('Pick a case with type "Promo Code" first (create one in Cases tab).'); return; }
+    try {
+      const r = await api.post('/admin/promo-codes', form);
+      setShowForm(false);
+      setMsg(`Promo code created: ${r.data.code}`);
+      load();
+    } catch (e) { setMsg(e.message); }
+  };
+
+  const toggleActive = async (p) => {
+    try {
+      await api.put(`/admin/promo-codes/${p.id}`, { requirement_type: p.requirement_type, requirement_value: p.requirement_value, max_uses: p.max_uses, is_active: !p.is_active });
+      load();
+    } catch (e) { setMsg(e.message); }
+  };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm('Deactivate this promo code?')) return;
+    try { await api.delete(`/admin/promo-codes/${id}`); load(); } catch (e) { setMsg(e.message); }
+  };
+
+  if (loading) return <Spinner />;
+
+  return (
+    <div>
+      <div className="flex justify-between items-center" style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.5)' }}>
+          🎟️ Promo codes unlock a "Promo Code" type case for users. Each code can require e.g. a
+          minimum Stars deposit, and resets per-user every 24h (00:00 GMT+5).
+        </div>
+        <button className="btn btn-primary" onClick={openCreate}>+ New Promo Code</button>
+      </div>
+      {msg && <div className="alert" style={{ marginBottom: 12 }}>{msg}</div>}
+      {cases.length === 0 && (
+        <div className="alert" style={{ marginBottom: 12 }}>
+          ⚠️ No "Promo Code" type cases found. Go to Cases → New Case → set Case Type to "Promo Code (managed in Promo Codes tab)" first.
+        </div>
+      )}
+
+      <div className="card">
+        {promos.length === 0 && <div style={{ color: 'rgba(255,255,255,0.4)', padding: 12 }}>No promo codes yet.</div>}
+        {promos.map(p => (
+          <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 0', borderBottom: '1px solid rgba(255,255,255,0.06)', opacity: p.is_active ? 1 : 0.4 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 800, letterSpacing: 1 }}>{p.code}</div>
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>
+                Case: {p.case_name} · Uses: {p.uses_count}{p.max_uses > 0 ? `/${p.max_uses}` : ' (unlimited)'}
+                {p.requirement_type === 'min_deposit' && ` · Requires ≥${p.requirement_value} ⭐ total deposited`}
+                {p.requirement_type === 'min_balance' && ` · Requires ≥${p.requirement_value} ⭐ balance`}
+              </div>
+            </div>
+            <button className="btn btn-secondary btn-sm" onClick={() => toggleActive(p)}>{p.is_active ? 'Disable' : 'Enable'}</button>
+            <button className="btn btn-danger btn-sm" onClick={() => handleDelete(p.id)}>✕</button>
+          </div>
+        ))}
+      </div>
+
+      {showForm && (
+        <Modal title="New Promo Code" onClose={() => setShowForm(false)}>
+          <div className="form-group">
+            <label className="form-label">Code (leave blank to auto-generate)</label>
+            <input className="form-input" value={form.code} onChange={e => setForm(p => ({ ...p, code: e.target.value.toUpperCase() }))} placeholder="e.g. WELCOME2026" />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Case</label>
+            <select className="form-input" value={form.case_id} onChange={e => setForm(p => ({ ...p, case_id: e.target.value }))}>
+              <option value="">Select a promo case…</option>
+              {cases.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Requirement</label>
+            <select className="form-input" value={form.requirement_type} onChange={e => setForm(p => ({ ...p, requirement_type: e.target.value }))}>
+              <option value="none">No requirement</option>
+              <option value="min_deposit">Minimum total Stars deposited</option>
+              <option value="min_balance">Minimum current Stars balance</option>
+            </select>
+          </div>
+          {form.requirement_type !== 'none' && (
+            <div className="form-group">
+              <label className="form-label">Required amount (⭐), e.g. 10</label>
+              <input className="form-input" type="number" min="0" value={form.requirement_value} onChange={e => setForm(p => ({ ...p, requirement_value: e.target.value }))} />
+            </div>
+          )}
+          <div className="form-group">
+            <label className="form-label">Max total uses (0 = unlimited)</label>
+            <input className="form-input" type="number" min="0" value={form.max_uses} onChange={e => setForm(p => ({ ...p, max_uses: e.target.value }))} />
+          </div>
+          <div className="flex gap-2">
+            <button className="btn btn-secondary flex-1" onClick={() => setShowForm(false)}>Cancel</button>
+            <button className="btn btn-primary flex-1" onClick={handleSave}>Create</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ========== WITHDRAWALS ==========
+function Withdrawals() {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState('pending');
+  const [msg, setMsg] = useState('');
+
+  const load = () => {
+    setLoading(true);
+    api.get('/admin/withdrawals', { params: { status } }).then(r => setItems(r.data.withdrawals)).finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, [status]);
+
+  const handleAction = async (id, action) => {
+    try {
+      if (action === 'approve') await api.post(`/admin/withdrawals/${id}/approve`, {});
+      else await api.post(`/admin/withdrawals/${id}/reject`, { notes: 'Rejected by admin' });
+      setMsg(`${action === 'approve' ? 'Approved' : 'Rejected'}!`);
+      load();
+    } catch (e) { setMsg(e.message); }
+  };
+
+  return (
+    <div>
+      <div className="section-header">
+        <div className="section-title">Withdrawals</div>
+        <div className="flex gap-2">
+          {['pending', 'approved', 'rejected'].map(s => (
+            <button key={s} className={`btn btn-sm ${status === s ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setStatus(s)}>
+              {s}
             </button>
           ))}
         </div>
       </div>
-
-      <div className="admin-content">
-        {activeTab === TABS.NFT && <NFTManagementSection />}
-        {activeTab === TABS.PROMO && <PromoCodeSection />}
-        {activeTab === TABS.BROADCAST && (
-          <div className="section">
-            <div className="section-header">
-              <h2>📢 Broadcast</h2>
-              <button className="btn btn-gold" onClick={() => {
-                const modal = document.createElement('div');
-                document.body.appendChild(modal);
-              }}>⭐ Send Stars to All</button>
-            </div>
-            <BroadcastStarsModal onClose={() => {}} onRefresh={() => {}} />
-          </div>
-        )}
-        {activeTab === TABS.DASHBOARD && (
-          <div className="section">
-            <h2>Dashboard</h2>
-            <p>Welcome to TMUX Admin Panel</p>
-            <div style={{ marginTop: 20, display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12 }}>
-              <div className="stat-card">
-                <div className="stat-label">Users</div>
-                <div className="stat-value">-</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-label">Cases</div>
-                <div className="stat-value">-</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-label">Total Deposits</div>
-                <div className="stat-value">-</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-label">Pending Withdrawals</div>
-                <div className="stat-value">-</div>
-              </div>
-            </div>
-          </div>
+      <Alert msg={msg} type={msg.includes('!') ? 'success' : 'error'} />
+      <div className="card">
+        {loading ? <LoadingCenter /> : items.length === 0 ? (
+          <div className="loading-center" style={{ padding: 40 }}>No {status} withdrawals</div>
+        ) : (
+          <table className="table">
+            <thead><tr><th>User</th><th>Item</th><th>Type</th><th>Value</th><th>Date</th><th>Actions</th></tr></thead>
+            <tbody>
+              {items.map(w => (
+                <tr key={w.id}>
+                  <td>
+                    <div style={{ fontWeight: 700 }}>{w.first_name}</div>
+                    <div className="text-xs text-muted">{w.username ? `@${w.username}` : `ID: ${w.user_id}`}</div>
+                  </td>
+                  <td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ fontSize: 24 }}>{w.gift_emoji || (w.reward_type === 'nft' ? '🖼️' : '🎁')}</span>
+                      <span style={{ fontSize: 13, fontWeight: 600 }}>{w.item_name}</span>
+                    </div>
+                  </td>
+                  <td><Badge status={w.reward_type} /></td>
+                  <td style={{ color: '#f59e0b', fontWeight: 700 }}>{parseFloat(w.value).toLocaleString()} ⭐</td>
+                  <td className="text-sm text-muted">{new Date(w.requested_at).toLocaleDateString()}</td>
+                  <td>
+                    {status === 'pending' ? (
+                      <div className="flex gap-2">
+                        <button className="btn btn-success btn-sm" onClick={() => handleAction(w.id, 'approve')}>✅ Approve</button>
+                        <button className="btn btn-danger btn-sm" onClick={() => handleAction(w.id, 'reject')}>❌ Reject</button>
+                      </div>
+                    ) : <Badge status={w.status} />}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
     </div>
+  );
+}
+
+// ========== DEPOSITS ==========
+function Deposits() {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState('pending');
+  const [msg, setMsg] = useState('');
+  const [approveModal, setApproveModal] = useState(null); // { id, stars_credited, ton_amount }
+  const [customStars, setCustomStars] = useState('');
+
+  const load = () => {
+    setLoading(true);
+    api.get('/admin/deposits', { params: { status } }).then(r => setItems(r.data.deposits)).finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, [status]);
+
+  const openApprove = (dep) => {
+    setApproveModal(dep);
+    setCustomStars(String(dep.stars_credited || ''));
+  };
+
+  const handleApprove = async () => {
+    try {
+      await api.post(`/admin/deposits/${approveModal.id}/approve`, { custom_stars: parseFloat(customStars) });
+      setMsg('Approved!');
+      setApproveModal(null);
+      load();
+    } catch (e) { setMsg(e.message); }
+  };
+
+  const handleReject = async (id) => {
+    try {
+      await api.post(`/admin/deposits/${id}/reject`);
+      setMsg('Rejected!');
+      load();
+    } catch (e) { setMsg(e.message); }
+  };
+
+  return (
+    <div>
+      <div className="section-header">
+        <div className="section-title">Deposits</div>
+        <div className="flex gap-2">
+          {['pending', 'completed', 'rejected'].map(s => (
+            <button key={s} className={`btn btn-sm ${status === s ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setStatus(s)}>{s}</button>
+          ))}
+        </div>
+      </div>
+      <Alert msg={msg} type={msg.includes('!') ? 'success' : 'error'} />
+      {approveModal && (
+        <div className="modal-backdrop">
+          <div className="modal-box">
+            <div className="modal-title">✅ Approve Deposit</div>
+            <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.5)', marginBottom: 16 }}>
+              User: <strong style={{ color: '#fff' }}>{approveModal.first_name}</strong> | TON: <strong style={{ color: '#4f8ef7' }}>{approveModal.ton_amount} TON</strong>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Stars to Credit ⭐</label>
+              <input
+                className="form-input"
+                type="number"
+                value={customStars}
+                onChange={e => setCustomStars(e.target.value)}
+                min="1"
+              />
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)', marginTop: 4 }}>
+                Auto-calculated from TON amount × rate. You can change manually.
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button className="btn btn-success flex-1" onClick={handleApprove}>✅ Confirm Approve</button>
+              <button className="btn btn-secondary" onClick={() => setApproveModal(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+      <div className="card">
+        {loading ? <LoadingCenter /> : items.length === 0 ? (
+          <div className="loading-center" style={{ padding: 40 }}>No {status} deposits</div>
+        ) : (
+          <table className="table">
+            <thead><tr><th>User</th><th>Method</th><th>Amount</th><th>TX Hash</th><th>Date</th><th>Actions</th></tr></thead>
+            <tbody>
+              {items.map(d => (
+                <tr key={d.id}>
+                  <td>
+                    <div style={{ fontWeight: 700 }}>{d.first_name}</div>
+                    <div className="text-xs text-muted">{d.username ? `@${d.username}` : `ID: ${d.user_id}`}</div>
+                  </td>
+                  <td><Badge status={d.method} /></td>
+                  <td style={{ color: '#f59e0b', fontWeight: 700 }}>
+                    {parseFloat(d.stars_credited).toLocaleString()} ⭐
+                    {d.ton_amount && <div className="text-xs text-muted">{d.ton_amount} TON</div>}
+                  </td>
+                  <td className="text-xs" style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {d.ton_tx_hash ? <span title={d.ton_tx_hash} style={{ fontFamily: 'monospace', color: 'rgba(255,255,255,0.5)' }}>{d.ton_tx_hash.slice(0, 16)}...</span> : '—'}
+                  </td>
+                  <td className="text-sm text-muted">{new Date(d.created_at).toLocaleDateString()}</td>
+                  <td>
+                    {d.status === 'pending' ? (
+                      <div className="flex gap-2">
+                        <button className="btn btn-success btn-sm" onClick={() => openApprove(d)}>✅ Approve</button>
+                        <button className="btn btn-danger btn-sm" onClick={() => handleReject(d.id)}>❌</button>
+                      </div>
+                    ) : <Badge status={d.status} />}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ========== BROADCAST ==========
+function Broadcast() {
+  const [tab, setTab] = useState('message');
+  const [form, setForm] = useState({ message_text: '', image_url: '', button_text: '', button_url: '' });
+  const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [broadcastId, setBroadcastId] = useState(null);
+  const [status, setStatus] = useState(null);
+
+  const [starsForm, setStarsForm] = useState({ amount: 5, reason: '' });
+  const [starsLoading, setStarsLoading] = useState(false);
+  const [starsMsg, setStarsMsg] = useState('');
+  const [starsResult, setStarsResult] = useState(null);
+
+  // Poll broadcast status
+  useEffect(() => {
+    if (!broadcastId) return;
+    const interval = setInterval(async () => {
+      try {
+        const r = await api.get(`/admin/broadcast/${broadcastId}/status`);
+        setStatus(r.data.broadcast);
+        if (r.data.broadcast.status === 'completed') clearInterval(interval);
+      } catch {}
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [broadcastId]);
+
+  const handleImageUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('image', file);
+      const r = await api.post('/admin/upload?type=gifts', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+      setForm(p => ({ ...p, image_url: r.data.url }));
+    } catch (e) { setMsg(e.message); } finally { setUploading(false); }
+  };
+
+  const handleSend = async () => {
+    if (!form.message_text) { setMsg('Message is required'); return; }
+    if (!window.confirm('Send broadcast to ALL users?')) return;
+    setLoading(true); setStatus(null);
+    try {
+      const r = await api.post('/admin/broadcast', form);
+      setBroadcastId(r.data.broadcast_id);
+      setMsg(`✅ Broadcast started! ID: ${r.data.broadcast_id}`);
+      setForm({ message_text: '', image_url: '', button_text: '', button_url: '' });
+    } catch (e) { setMsg(e.message); } finally { setLoading(false); }
+  };
+
+  const handleBroadcastStars = async () => {
+    const amount = parseFloat(starsForm.amount);
+    if (!amount || amount <= 0) { setStarsMsg('Enter a valid Stars amount'); return; }
+    if (!starsForm.reason?.trim()) { setStarsMsg('Reason is required'); return; }
+    if (!window.confirm(`Give ${amount} ⭐ to ALL users? Reason: "${starsForm.reason}"`)) return;
+    setStarsLoading(true); setStarsResult(null);
+    try {
+      const r = await api.post('/admin/broadcast-stars', starsForm);
+      setStarsResult(r.data);
+      setStarsMsg(`✅ Done! Credited ${r.data.credited}/${r.data.total_users} users with ${amount} ⭐ each.`);
+      setStarsForm({ amount: 5, reason: '' });
+    } catch (e) { setStarsMsg(e.message); } finally { setStarsLoading(false); }
+  };
+
+  const API_BASE = (process.env.REACT_APP_API_URL || '/api').replace('/api', '');
+
+  return (
+    <div>
+      <div className="section-title mb-6">Broadcast</div>
+
+      <div className="flex gap-2" style={{ marginBottom: 16 }}>
+        <button className={`btn btn-sm ${tab === 'message' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('message')}>📢 Message</button>
+        <button className={`btn btn-sm ${tab === 'stars' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab('stars')}>⭐ Give Stars to Everyone</button>
+      </div>
+
+      {tab === 'message' && (
+        <>
+          <Alert msg={msg} type={msg.startsWith('✅') ? 'success' : 'error'} />
+
+          {status && (
+            <div className="card mb-4" style={{ maxWidth: 560 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8 }}>📊 Broadcast Status</div>
+              <div style={{ display: 'flex', gap: 16, fontSize: 13 }}>
+                <span>Status: <b>{status.status}</b></span>
+                <span style={{ color: '#10b981' }}>✅ Sent: {status.sent_count}</span>
+                <span style={{ color: '#ef4444' }}>❌ Failed: {status.failed_count}</span>
+              </div>
+            </div>
+          )}
+
+          <div className="card" style={{ maxWidth: 560 }}>
+            <div className="form-group">
+              <label className="form-label">Message Text (HTML supported)</label>
+              <textarea className="form-input" rows={5} placeholder="<b>Hello!</b> Check out our new cases..." value={form.message_text} onChange={e => setForm(p => ({ ...p, message_text: e.target.value }))} style={{ resize: 'vertical' }} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Image (optional)</label>
+              <input type="file" accept="image/*" onChange={handleImageUpload} style={{ display: 'none' }} id="broadcast-img" />
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <label htmlFor="broadcast-img" className="btn btn-secondary btn-sm" style={{ cursor: 'pointer' }}>{uploading ? '⏳ Uploading...' : '📎 Upload Image'}</label>
+                <input className="form-input" placeholder="or paste URL" style={{ flex: 1, minWidth: 160 }} value={form.image_url} onChange={e => setForm(p => ({ ...p, image_url: e.target.value }))} />
+              </div>
+              {form.image_url && (
+                <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <img src={form.image_url.startsWith('/uploads/') ? `${API_BASE}${form.image_url}` : form.image_url} alt="preview" style={{ width: 72, height: 72, objectFit: 'cover', borderRadius: 10 }} onError={e => e.target.style.display='none'} />
+                  <button className="btn btn-danger btn-sm" onClick={() => setForm(p => ({ ...p, image_url: '' }))}>✕</button>
+                </div>
+              )}
+            </div>
+            <div className="form-group">
+              <label className="form-label">Button Text (optional)</label>
+              <input className="form-input" placeholder="Open App" value={form.button_text} onChange={e => setForm(p => ({ ...p, button_text: e.target.value }))} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Button URL (optional)</label>
+              <input className="form-input" placeholder="https://..." value={form.button_url} onChange={e => setForm(p => ({ ...p, button_url: e.target.value }))} />
+            </div>
+            <button className="btn btn-primary w-full" onClick={handleSend} disabled={loading || uploading}>
+              {loading ? <><Spinner /> Sending...</> : '📢 Send to All Users'}
+            </button>
+          </div>
+        </>
+      )}
+
+      {tab === 'stars' && (
+        <>
+          <Alert msg={starsMsg} type={starsMsg.startsWith('✅') ? 'success' : 'error'} />
+          <div className="card" style={{ maxWidth: 480 }}>
+            <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.5)', marginBottom: 14 }}>
+              🎁 Instantly credit every (non-banned) user's balance with the same amount of Stars.
+              A reason is required and will be shown to users in their transaction history and via a bot notification.
+            </div>
+            <div className="form-group">
+              <label className="form-label">Stars amount per user</label>
+              <input className="form-input" type="number" min="1" step="1" placeholder="e.g. 5" value={starsForm.amount} onChange={e => setStarsForm(p => ({ ...p, amount: e.target.value }))} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Reason (shown to users)</label>
+              <input className="form-input" placeholder="e.g. Bonus for app launch 🎉" value={starsForm.reason} onChange={e => setStarsForm(p => ({ ...p, reason: e.target.value }))} />
+            </div>
+            <button className="btn btn-primary w-full" onClick={handleBroadcastStars} disabled={starsLoading}>
+              {starsLoading ? <><Spinner /> Sending Stars...</> : `⭐ Give ${starsForm.amount || 0} Stars to Everyone`}
+            </button>
+            {starsResult && (
+              <div style={{ marginTop: 14, fontSize: 13, color: 'rgba(255,255,255,0.6)' }}>
+                Credited: <b style={{ color: '#10b981' }}>{starsResult.credited}</b> / {starsResult.total_users} users
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ========== SETTINGS ==========
+function Settings() {
+  const [settings, setSettings] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [msg, setMsg] = useState('');
+  const [activeTab, setActiveTab] = useState('system');
+
+  useEffect(() => {
+    api.get('/admin/settings').then(r => setSettings(r.data.settings || {})).finally(() => setLoading(false));
+  }, []);
+
+  const handleSave = async () => {
+    try {
+      setMsg('💾 Saving...');
+      const response = await api.put('/admin/settings', settings);
+      console.log('Settings saved:', response.data);
+      setMsg('✅ Settings saved successfully!');
+      setTimeout(() => setMsg(''), 4000);
+    } catch (e) {
+      console.error('Save error:', e);
+      const errMsg = e.response?.data?.error || e.message || 'Failed to save settings';
+      setMsg('❌ ' + errMsg);
+      setTimeout(() => setMsg(''), 5000);
+    }
+  };
+
+  const set = (key, val) => setSettings(p => ({ ...p, [key]: val }));
+
+  const systemSettings = [
+    { key: 'referral_reward_stars', label: 'Stars Per Referral', type: 'number' },
+    { key: 'referral_reward_percentage', label: 'Referral Deposit Bonus %', type: 'number' },
+    { key: 'ton_to_stars_rate', label: 'TON → Stars Rate', type: 'number' },
+    { key: 'upgrade_min_value', label: 'Min Upgrade Item Value', type: 'number' },
+    { key: 'max_upgrade_chance', label: 'Max Upgrade Chance %', type: 'number' },
+    { key: 'min_upgrade_chance', label: 'Min Upgrade Chance %', type: 'number' },
+    { key: 'pity_games_limit', label: 'Upgrade/Mines: force a loss within N consecutive wins', type: 'number' },
+    { key: 'demo_case_chance_boost', label: 'Demo Case: rare-reward chance boost multiplier', type: 'number' },
+    { key: 'min_withdrawal_stars_deposited', label: 'Min Stars deposited required to withdraw gifts/NFTs', type: 'number' },
+    { key: 'daily_reset_gmt_offset', label: 'Daily reset GMT offset (hours), e.g. 5 for GMT+5', type: 'number' },
+    { key: 'max_devices_per_account', label: 'Max accounts allowed per device (anti multi-account)', type: 'number' },
+    { key: 'bot_username', label: 'Bot Username', type: 'text' },
+    { key: 'webapp_url', label: 'Mini App URL', type: 'text' },
+    { key: 'maintenance_mode', label: 'Maintenance Mode (true/false)', type: 'text' },
+  ];
+
+  const tabs = [
+    { id: 'system', label: '⚙️ System' },
+    { id: 'channel', label: '📢 Channel Join' },
+    { id: 'messages', label: '💬 Start Messages' },
+  ];
+
+  return (
+    <div>
+      <div className="section-title mb-6">Settings</div>
+      <Alert msg={msg} type={msg.startsWith('✅') ? 'success' : 'error'} />
+
+      {/* Tabs */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+        {tabs.map(t => (
+          <button key={t.id} className={`btn ${activeTab === t.id ? 'btn-primary' : 'btn-secondary'} btn-sm`}
+            onClick={() => setActiveTab(t.id)}>{t.label}</button>
+        ))}
+      </div>
+
+      {loading ? <LoadingCenter /> : (
+        <div className="card" style={{ maxWidth: 600 }}>
+
+          {activeTab === 'system' && <>
+            {systemSettings.map(s => (
+              <div className="form-group" key={s.key}>
+                <label className="form-label">{s.label}</label>
+                <input className="form-input" type={s.type} value={settings[s.key] || ''} onChange={e => set(s.key, e.target.value)} />
+              </div>
+            ))}
+          </>}
+
+          {activeTab === 'channel' && <>
+            <div className="form-group">
+              <label className="form-label">📢 Required Channel for Subscription</label>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                <input 
+                  className="form-input" 
+                  placeholder="@channelname or -100123456789" 
+                  id="channelInput"
+                  style={{ flex: 1, marginBottom: 0 }}
+                />
+                <button 
+                  className="btn btn-primary" 
+                  onClick={() => {
+                    const ch = document.getElementById('channelInput').value?.trim();
+                    if (ch) {
+                      set('required_channel', ch);
+                      document.getElementById('channelInput').value = '';
+                    }
+                  }}
+                  style={{ padding: '8px 16px' }}
+                >
+                  Set
+                </button>
+                {settings.required_channel && (
+                  <button 
+                    className="btn btn-danger" 
+                    onClick={() => set('required_channel', '')}
+                    style={{ padding: '8px 16px' }}
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+              {settings.required_channel && (
+                <div style={{ padding: 10, backgroundColor: 'rgba(76, 175, 80, 0.1)', borderRadius: 6, marginBottom: 12, border: '1px solid rgba(76, 175, 80, 0.3)' }}>
+                  ✅ Required channel: <strong>{settings.required_channel}</strong>
+                </div>
+              )}
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)' }}>
+                Users must join this channel to use the mini app. Leave empty to disable.
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Join Channel Message (HTML)</label>
+              <textarea className="form-input" rows={3} placeholder="📢 Please join our channel..." value={settings.join_channel_text || ''} onChange={e => set('join_channel_text', e.target.value)} style={{ resize: 'vertical' }} />
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 6 }}>Shown when user hasn't joined the required channel</div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Success Message (HTML)</label>
+              <textarea className="form-input" rows={3} placeholder="✅ Thank you for joining!" value={settings.subscription_success_text || ''} onChange={e => set('subscription_success_text', e.target.value)} style={{ resize: 'vertical' }} />
+              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', marginTop: 6 }}>Shown after user joins the channel</div>
+            </div>
+          </>}
+
+          {activeTab === 'messages' && <>
+            <div className="form-group">
+              <label className="form-label">Welcome Text (HTML)</label>
+              <textarea className="form-input" rows={5} placeholder="🎁 <b>Welcome!</b>..." value={settings.welcome_text || ''} onChange={e => set('welcome_text', e.target.value)} style={{ resize: 'vertical' }} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Open App Button Text</label>
+              <input className="form-input" placeholder="🎰 Open Mini App" value={settings.open_app_button_text || ''} onChange={e => set('open_app_button_text', e.target.value)} />
+            </div>
+
+            {/* Buttons Manager */}
+            <div className="form-group">
+              <label className="form-label">📱 Extra Buttons</label>
+              <div style={{ marginBottom: 12, padding: 10, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 6 }}>
+                {(() => {
+                  try {
+                    const buttons = JSON.parse(settings.extra_buttons || '[]');
+                    return buttons.length > 0 ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {buttons.map((btn, i) => (
+                          <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 8, backgroundColor: 'rgba(0,0,0,0.3)', borderRadius: 4, fontSize: 13 }}>
+                            <div><strong>{btn.text}</strong> → {btn.url.substring(0, 30)}...</div>
+                            <button className="btn btn-sm btn-danger" onClick={() => {
+                              const newBtns = buttons.filter((_, idx) => idx !== i);
+                              set('extra_buttons', JSON.stringify(newBtns));
+                            }} style={{ padding: '4px 8px', fontSize: 11 }}>Delete</button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12 }}>No buttons yet</div>;
+                  } catch (e) {
+                    return <div style={{ color: '#ff6b6b', fontSize: 12 }}>Invalid JSON</div>;
+                  }
+                })()}
+              </div>
+
+              {/* Add Button Form */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, marginBottom: 10 }}>
+                <input 
+                  className="form-input" 
+                  placeholder="Button text (e.g. 🔗 Website)" 
+                  id="btnText"
+                  style={{ marginBottom: 0 }}
+                />
+                <input 
+                  className="form-input" 
+                  placeholder="URL (e.g. https://...)" 
+                  id="btnUrl"
+                  style={{ marginBottom: 0 }}
+                />
+                <button 
+                  className="btn btn-primary" 
+                  onClick={() => {
+                    const text = document.getElementById('btnText').value?.trim();
+                    const url = document.getElementById('btnUrl').value?.trim();
+                    if (!text || !url) { alert('Fill in both fields'); return; }
+                    try {
+                      const buttons = JSON.parse(settings.extra_buttons || '[]');
+                      buttons.push({ text, url });
+                      set('extra_buttons', JSON.stringify(buttons));
+                      document.getElementById('btnText').value = '';
+                      document.getElementById('btnUrl').value = '';
+                    } catch (e) {
+                      alert('Error adding button');
+                    }
+                  }}
+                  style={{ padding: '8px 12px', marginBottom: 0 }}
+                >
+                  Add
+                </button>
+              </div>
+            </div>
+          </>}
+
+          <button className="btn btn-primary w-full" onClick={handleSave}>💾 Save Settings</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ========== LOGS ==========
+function Logs() {
+  const [logs, setLogs] = useState([]);
+  const [type, setType] = useState('admin');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    api.get('/admin/logs', { params: { type } }).then(r => setLogs(r.data.logs)).finally(() => setLoading(false));
+  }, [type]);
+
+  return (
+    <div>
+      <div className="section-header">
+        <div className="section-title">Logs</div>
+        <div className="flex gap-2">
+          {['admin', 'case_opens', 'upgrades'].map(t => (
+            <button key={t} className={`btn btn-sm ${type === t ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setType(t)}>{t}</button>
+          ))}
+        </div>
+      </div>
+      <div className="card">
+        {loading ? <LoadingCenter /> : (
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                {type === 'admin' && <><th>Admin</th><th>Action</th><th>Target</th></>}
+                {type === 'case_opens' && <><th>User</th><th>Case</th><th>Reward</th></>}
+                {type === 'upgrades' && <><th>User</th><th>Source ⭐</th><th>Target ⭐</th><th>Chance</th><th>Result</th></>}
+              </tr>
+            </thead>
+            <tbody>
+              {logs.map((l, i) => (
+                <tr key={i}>
+                  <td className="text-xs text-muted">{new Date(l.created_at).toLocaleString()}</td>
+                  {type === 'admin' && (
+                    <><td>{l.first_name}</td><td style={{ fontFamily: 'monospace', fontSize: 11 }}>{l.action}</td><td className="text-muted text-sm">{l.target_type} #{l.target_id}</td></>
+                  )}
+                  {type === 'case_opens' && (
+                    <><td>{l.first_name} {l.username ? `@${l.username}` : ''}</td><td>{l.case_name}</td><td>{l.reward_name}</td></>
+                  )}
+                  {type === 'upgrades' && (
+                    <><td>{l.first_name}</td><td style={{ color: '#f59e0b' }}>{parseFloat(l.source_value).toLocaleString()}</td><td style={{ color: '#f59e0b' }}>{parseFloat(l.target_value).toLocaleString()}</td><td>{l.win_chance}%</td><td><Badge status={l.result} /></td></>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ========== LOGIN ==========
+function Login() {
+  const [initData, setInitData] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [telegramUser, setTelegramUser] = useState(null);
+
+  useEffect(() => {
+    const tg = getTelegramWebApp();
+    const currentUser = tg?.initDataUnsafe?.user || null;
+    setTelegramUser(currentUser);
+
+    const stored = syncAdminInitData();
+    setInitData(stored);
+
+    if (currentUser && !isAllowedAdminUser(currentUser)) {
+      setError('This Telegram account is not allowed to access admin.');
+      return;
+    }
+
+    if (stored) {
+      handleLogin(stored);
+    }
+  }, []);
+
+  async function handleLogin(providedInitData) {
+    const data = String(providedInitData ?? initData ?? '').trim();
+    if (!data) { setError('Access key is missing'); return; }
+    if (telegramUser && !isAllowedAdminUser(telegramUser)) {
+      setError('This Telegram account is not allowed to access admin.');
+      return;
+    }
+    setLoading(true);
+    try {
+      if (data !== BROWSER_ADMIN_KEY) {
+        localStorage.setItem('admin_init_data', data);
+      }
+      await api.get('/admin/dashboard');
+      window.location.reload();
+    } catch (e) {
+      if (data !== BROWSER_ADMIN_KEY) localStorage.removeItem('admin_init_data');
+      setError('Invalid credentials or not an admin');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const tg = getTelegramWebApp();
+  const detectedUser = telegramUser || tg?.initDataUnsafe?.user || null;
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: 20 }}>
+      <div style={{ background: '#161621', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 20, padding: 32, width: '100%', maxWidth: 400 }}>
+        <div style={{ textAlign: 'center', marginBottom: 28 }}>
+          <div style={{ fontSize: 48, marginBottom: 10 }}>🎁</div>
+          <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>TmuxCase Admin</div>
+          <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)' }}>
+            {BROWSER_ADMIN_KEY ? 'Browser admin access is enabled' : 'Telegram initData orqali kirish'}
+          </div>
+        </div>
+        <Alert msg={error} type="error" />
+        {detectedUser && (
+          <div style={{ marginBottom: 16, padding: 12, borderRadius: 12, background: 'rgba(79,142,247,0.08)', border: '1px solid rgba(79,142,247,0.18)', fontSize: 13, lineHeight: 1.5 }}>
+            <div><strong>User ID:</strong> {detectedUser.id}</div>
+            <div><strong>Username:</strong> @{detectedUser.username || 'no username'}</div>
+          </div>
+        )}
+        {!BROWSER_ADMIN_KEY && (
+          <div className="form-group">
+            <label className="form-label">Telegram InitData</label>
+            <textarea
+              className="form-input"
+              rows={4}
+              placeholder="query_id=...&user=...&auth_date=...&hash=..."
+              value={initData}
+              onChange={e => setInitData(e.target.value)}
+              style={{ resize: 'none', fontFamily: 'monospace', fontSize: 11 }}
+            />
+          </div>
+        )}
+        {!BROWSER_ADMIN_KEY && (
+          <button className="btn btn-primary w-full" onClick={() => handleLogin()} disabled={loading}>
+            {loading ? 'Checking...' : 'Login →'}
+          </button>
+        )}
+        <div style={{ marginTop: 16, fontSize: 12, color: 'rgba(255,255,255,0.3)', textAlign: 'center', lineHeight: 1.6 }}>
+          {BROWSER_ADMIN_KEY
+            ? 'Admin panel browser access key orqali ochildi.'
+            : 'Telegram ichida ochilganda initData avtomatik olinadi.<br/>Ruxsat faqat ADMIN_IDS ga mos bo‘lsa beriladi.'}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ========== SIDEBAR ==========
+function Sidebar({ open, onClose }) {
+  const handleLogout = () => { localStorage.removeItem('admin_init_data'); window.location.reload(); };
+  const navItems = [
+    { to: '/', label: 'Dashboard', icon: '📊' },
+    { section: 'Management' },
+    { to: '/users', label: 'Users', icon: '👥' },
+    { to: '/cases', label: 'Cases', icon: '🎁' },
+    { to: '/nfts', label: 'NFT', icon: '🖼️' },
+    { to: '/promo-codes', label: 'Promo Codes', icon: '🎟️' },
+    { section: 'Operations' },
+    { to: '/withdrawals', label: 'Withdrawals', icon: '📤' },
+    { to: '/deposits', label: 'Deposits', icon: '💰' },
+    { section: 'Tools' },
+    { to: '/broadcast', label: 'Broadcast', icon: '📢' },
+    { to: '/settings', label: 'Settings', icon: '⚙️' },
+    { to: '/logs', label: 'Logs', icon: '📜' },
+  ];
+
+  return (
+    <>
+      {open && <div className="sidebar-overlay visible" onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.6)',zIndex:199}} />}
+      <div className={`sidebar${open ? ' mobile-open' : ''}`}>
+        <div className="sidebar-logo">
+          <div className="sidebar-logo-icon">🎁</div>
+          <div className="sidebar-logo-text">TmuxCase</div>
+        </div>
+        <nav className="sidebar-nav">
+          {navItems.map((item, i) =>
+            item.section ? (
+              <div key={i} className="nav-section">{item.section}</div>
+            ) : (
+              <NavLink key={item.to} to={item.to} end={item.to === '/'} onClick={onClose} className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+                {item.icon} {item.label}
+              </NavLink>
+            )
+          )}
+        </nav>
+        <div style={{ padding: 12 }}>
+          <button className="btn btn-secondary" style={{ width: '100%', fontSize: 12 }} onClick={handleLogout}>🚪 Logout</button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ========== PAGE WRAPPER ==========
+function PageWrapper({ title, children, onMenuOpen }) {
+  return (
+    <div className="main-content">
+      <div className="topbar">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button className="hamburger" onClick={onMenuOpen}>☰</button>
+          <div className="page-title">{title}</div>
+        </div>
+      </div>
+      <div className="content-area">{children}</div>
+    </div>
+  );
+}
+
+// ========== APP ==========
+export default function App() {
+  try {
+    const tg = getTelegramWebApp();
+    if (tg?.initData && tg.initData.length > 0) {
+      localStorage.setItem('admin_init_data', tg.initData);
+      tg.ready();
+      tg.expand();
+    }
+  } catch (e) {}
+
+  const [authed, setAuthed] = useState(!!syncAdminInitData() || !!BROWSER_ADMIN_KEY);
+
+  useEffect(() => {
+    const check = async () => {
+      if (BROWSER_ADMIN_KEY) {
+        setAuthed(true);
+        return;
+      }
+      if (!syncAdminInitData()) { setAuthed(false); return; }
+      try {
+        await api.get('/admin/dashboard');
+        setAuthed(true);
+      } catch { localStorage.removeItem('admin_init_data'); setAuthed(false); }
+    };
+    check();
+  }, []);
+
+  if (!authed) return (
+    <>
+      <style>{styles}</style>
+      <Login />
+    </>
+  );
+
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  return (
+    <BrowserRouter basename="/admin">
+      <style>{styles}</style>
+      <div className="admin-layout">
+        <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+        <Routes>
+          <Route path="/" element={<PageWrapper title="Dashboard" onMenuOpen={() => setSidebarOpen(true)}><Dashboard /></PageWrapper>} />
+          <Route path="/users" element={<PageWrapper title="Users" onMenuOpen={() => setSidebarOpen(true)}><Users /></PageWrapper>} />
+          <Route path="/cases" element={<PageWrapper title="Cases" onMenuOpen={() => setSidebarOpen(true)}><CasesManager /></PageWrapper>} />
+          <Route path="/nfts" element={<PageWrapper title="NFT" onMenuOpen={() => setSidebarOpen(true)}><NftManager /></PageWrapper>} />
+          <Route path="/promo-codes" element={<PageWrapper title="Promo Codes" onMenuOpen={() => setSidebarOpen(true)}><PromoCodesManager /></PageWrapper>} />
+          <Route path="/withdrawals" element={<PageWrapper title="Withdrawals" onMenuOpen={() => setSidebarOpen(true)}><Withdrawals /></PageWrapper>} />
+          <Route path="/deposits" element={<PageWrapper title="Deposits" onMenuOpen={() => setSidebarOpen(true)}><Deposits /></PageWrapper>} />
+          <Route path="/broadcast" element={<PageWrapper title="Broadcast" onMenuOpen={() => setSidebarOpen(true)}><Broadcast /></PageWrapper>} />
+          <Route path="/settings" element={<PageWrapper title="Settings" onMenuOpen={() => setSidebarOpen(true)}><Settings /></PageWrapper>} />
+          <Route path="/logs" element={<PageWrapper title="Logs" onMenuOpen={() => setSidebarOpen(true)}><Logs /></PageWrapper>} />
+        </Routes>
+      </div>
+    </BrowserRouter>
   );
 }

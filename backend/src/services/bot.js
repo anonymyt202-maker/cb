@@ -122,6 +122,51 @@ async function setupBot() {
     }
   });
 
+  // Anti-nakrutka captcha javobi
+  b.action(/^captcha_(\d+)_(-?\d+)$/, async (ctx) => {
+    const targetUserId = parseInt(ctx.match[1], 10);
+    const chosenAnswer = parseInt(ctx.match[2], 10);
+    const userId = ctx.from.id;
+
+    if (userId !== targetUserId) {
+      return ctx.answerCbQuery('Bu sizga tegishli emas.', { show_alert: true });
+    }
+
+    const pending = await queryOne(`SELECT value FROM settings WHERE key_name = ?`, [`captcha_pending_${userId}`]);
+    if (!pending?.value) {
+      return ctx.answerCbQuery('Bu so\'rov muddati o\'tgan.', { show_alert: true });
+    }
+
+    let data;
+    try { data = JSON.parse(pending.value); } catch { data = null; }
+    if (!data) return ctx.answerCbQuery('Xatolik yuz berdi.', { show_alert: true });
+
+    if (chosenAnswer !== data.correct) {
+      await ctx.answerCbQuery('❌ Noto\'g\'ri javob, qaytadan urinib ko\'ring.', { show_alert: true });
+      // Yangi misol bilan qaytadan yuboramiz
+      await query(`DELETE FROM settings WHERE key_name = ?`, [`captcha_pending_${userId}`]);
+      await sendReferralCaptcha(ctx, userId, data.startParam);
+      try { await ctx.deleteMessage(); } catch (e) {}
+      return;
+    }
+
+    await ctx.answerCbQuery('✅ Tasdiqlandi!');
+    await query(`DELETE FROM settings WHERE key_name = ?`, [`captcha_pending_${userId}`]);
+
+    try {
+      const referralCode = data.startParam.replace('ref_', '');
+      const referrer = await queryOne(`SELECT id FROM users WHERE referral_code = ?`, [referralCode]);
+      if (referrer && referrer.id !== userId) {
+        await grantReferralReward(referrer.id, userId, ctx);
+      }
+    } catch (err) {
+      console.error('captcha referral grant error:', err);
+    }
+
+    try { await ctx.deleteMessage(); } catch (e) {}
+    await ctx.reply('✅ Tasdiqlandingiz! Endi ilovadan to\'liq foydalanishingiz mumkin.');
+  });
+
   // Check subscription callback
   b.action('check_subscription', async (ctx) => {
     await ctx.answerCbQuery();
@@ -214,6 +259,59 @@ async function setupBot() {
   return b;
 }
 
+// ============================================================================
+//  ANTI-NAKRUTKA (referral fraud) — oddiy captcha
+//  Talab: "Nakrutkadan himoya anti bot misol beriladi 1 ta misol 3 ta variant"
+//  Yangi foydalanuvchi referral orqali kelganda, mukofot DARHOL berilmaydi —
+//  avval oddiy matematik misol (1 misol, 3 javob variant) ko'rsatiladi.
+//  To'g'ri javob berilgandagina referral haqiqiy deb hisoblanadi va
+//  referrer'ga mukofot yoziladi. Bu oddiy bot/skript orqali ko'plab
+//  "soxta" referral hosil qilishni qiyinlashtiradi.
+// ============================================================================
+function generateCaptchaChallenge() {
+  const a = Math.floor(Math.random() * 8) + 1;
+  const b = Math.floor(Math.random() * 8) + 1;
+  const correct = a + b;
+
+  const wrongOffsets = [1, -1, 2, -2, 3].sort(() => Math.random() - 0.5);
+  const wrongAnswers = new Set();
+  for (const off of wrongOffsets) {
+    const candidate = correct + off;
+    if (candidate !== correct && candidate > 0) wrongAnswers.add(candidate);
+    if (wrongAnswers.size >= 2) break;
+  }
+  const options = [correct, ...Array.from(wrongAnswers).slice(0, 2)];
+  while (options.length < 3) options.push(correct + options.length + 1);
+
+  // Variantlarni aralashtiramiz
+  options.sort(() => Math.random() - 0.5);
+
+  return { question: `${a} + ${b} = ?`, options, correct };
+}
+
+async function sendReferralCaptcha(ctx, userId, startParam) {
+  const challenge = generateCaptchaChallenge();
+
+  // Pending referralni va kutilayotgan to'g'ri javobni saqlaymiz
+  await query(
+    `INSERT OR REPLACE INTO settings (key_name, value) VALUES (?, ?)`,
+    [`captcha_pending_${userId}`, JSON.stringify({ startParam, correct: challenge.correct })]
+  );
+
+  await ctx.reply(
+    `🤖 <b>Tasdiqlash kerak</b>\n\nIltimos, robot emasligingizni tasdiqlash uchun savolga javob bering:\n\n<b>${challenge.question}</b>`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [challenge.options.map(opt => ({
+          text: String(opt),
+          callback_data: `captcha_${userId}_${opt}`,
+        }))],
+      },
+    }
+  );
+}
+
 async function processReferral(userId, startParam, ctx) {
   if (!startParam || !startParam.startsWith('ref_')) return;
   const referralCode = startParam.replace('ref_', '');
@@ -229,12 +327,23 @@ async function processReferral(userId, startParam, ctx) {
   const existingRef = await queryOne(`SELECT id FROM referrals WHERE referrer_id = ? AND referred_id = ?`, [referrer.id, userId]);
   if (existingRef) return;
 
+  // Nakrutkadan himoya: mukofotni darhol bermaymiz — avval anti-bot captcha
+  // ko'rsatamiz. To'g'ri javob berilgandan keyin grantReferralReward chaqiriladi
+  // (quyida, captcha_ callback handlerida).
+  await sendReferralCaptcha(ctx, userId, startParam);
+}
+
+async function grantReferralReward(referrerId, referredUserId, ctx) {
+  const existingRef = await queryOne(`SELECT id FROM referrals WHERE referrer_id = ? AND referred_id = ?`, [referrerId, referredUserId]);
+  if (existingRef) return;
+
   const rewardStars = parseFloat(await getSetting('referral_reward_stars', '10'));
+  const referrer = { id: referrerId };
 
   await transaction(async (conn) => {
     await conn.execute(
       `INSERT OR IGNORE INTO referrals (referrer_id, referred_id, reward_given) VALUES (?, ?, ?)`,
-      [referrer.id, userId, rewardStars]
+      [referrer.id, referredUserId, rewardStars]
     );
     if (rewardStars > 0) {
       const bal = await queryOne(`SELECT stars_balance FROM balances WHERE user_id = ?`, [referrer.id]);

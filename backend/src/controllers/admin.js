@@ -1,5 +1,24 @@
 const { query, queryOne, transaction } = require('../utils/db');
 const { processImageInput } = require('../utils/imageDownloader');
+const crypto = require('crypto');
+
+function extractInsertId(result) {
+  if (result == null) return null;
+  if (typeof result === 'number') return result;
+  if (Array.isArray(result)) {
+    for (const item of result) {
+      const id = extractInsertId(item);
+      if (id != null) return id;
+    }
+    return null;
+  }
+  if (typeof result === 'object') {
+    if (result.insertId != null) return result.insertId;
+    if (result.lastInsertRowid != null) return result.lastInsertRowid;
+    if (result[0] != null) return extractInsertId(result[0]);
+  }
+  return null;
+}
 
 // Dashboard stats
 async function getDashboard(req, res) {
@@ -439,7 +458,11 @@ async function getSettings(req, res) {
   try {
     const settings = await query(`SELECT * FROM settings`);
     const settingsMap = {};
-    settings.forEach(s => { settingsMap[s.key_name] = s.value; });
+    settings.forEach(s => {
+      // Vaqtinchalik/ichki kalitlarni (referral captcha holati va h.k.) admin UI'siga chiqarmaymiz
+      if (s.key_name.startsWith('pending_ref_') || s.key_name.startsWith('captcha_pending_')) return;
+      settingsMap[s.key_name] = s.value;
+    });
     res.json({ settings: settingsMap });
   } catch (err) {
     res.status(500).json({ error: 'Failed to load settings' });
@@ -523,6 +546,233 @@ async function logAdminAction(adminId, action, targetType, targetId, details) {
   }
 }
 
+// ============================================================================
+//  NFT LIBRARY (global) — Admin panelda "NFT" bo'limi
+//  Talab: "admin panelda NFT degan joy qo'sh o'sha yerda nft lar qo'sha olaman
+//  va case ochishda shu nftlarni tanlab yarataman"
+//  Bu yerda NFT shablonlari saqlanadi; case reward yaratishda admin shu
+//  ro'yxatdan birini tanlab, case_rewards jadvaliga nusxa sifatida qo'shadi
+//  (createReward / createRewardFromNft orqali).
+// ============================================================================
+async function getNftLibrary(req, res) {
+  try {
+    const nfts = await query(`SELECT * FROM nft_templates ORDER BY created_at DESC`);
+    res.json({ nfts });
+  } catch (err) {
+    console.error('getNftLibrary error:', err);
+    res.status(500).json({ error: 'Failed to load NFT library' });
+  }
+}
+
+async function createNft(req, res) {
+  try {
+    const { name, image_url, value, rarity } = req.body;
+    if (!name) return res.status(400).json({ error: 'Name is required' });
+
+    let localImageUrl = null;
+    if (image_url) {
+      try {
+        localImageUrl = await processImageInput(image_url, 'nfts');
+      } catch (imgErr) {
+        return res.status(400).json({ error: `Image processing failed: ${imgErr.message}` });
+      }
+    }
+
+    const [result] = await query(
+      `INSERT INTO nft_templates (name, image_url, value, rarity) VALUES (?, ?, ?, ?)`,
+      [name, localImageUrl || '', value || 0, rarity || 'common']
+    );
+
+    await logAdminAction(req.user.id, 'create_nft', 'nft_template', result.insertId, { name });
+    res.json({ success: true, nft_id: result.insertId });
+  } catch (err) {
+    console.error('createNft error:', err);
+    res.status(500).json({ error: 'Failed to create NFT' });
+  }
+}
+
+async function updateNft(req, res) {
+  try {
+    const { id } = req.params;
+    const { name, image_url, value, rarity, is_active } = req.body;
+
+    let localImageUrl = image_url || '';
+    if (image_url && !image_url.startsWith('/uploads/')) {
+      try {
+        localImageUrl = await processImageInput(image_url, 'nfts') || '';
+      } catch (imgErr) {
+        return res.status(400).json({ error: `Image processing failed: ${imgErr.message}` });
+      }
+    }
+
+    await query(
+      `UPDATE nft_templates SET name=?, image_url=?, value=?, rarity=?, is_active=? WHERE id=?`,
+      [name, localImageUrl, value || 0, rarity || 'common', is_active ? 1 : 0, id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update NFT' });
+  }
+}
+
+async function deleteNft(req, res) {
+  try {
+    const { id } = req.params;
+    await query(`UPDATE nft_templates SET is_active = 0 WHERE id = ?`, [id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete NFT' });
+  }
+}
+
+// Global NFT kutubxonasidan tanlab, to'g'ridan-to'g'ri case_rewards ga qo'shish.
+// Talab: "case ochishda shu nftlarni tanlab yarataman" — ya'ni NFT bo'limidagi
+// NFT'ni tanlab, biror case ichiga reward sifatida joylash.
+async function attachNftToCase(req, res) {
+  try {
+    const { case_id, nft_id, chance } = req.body;
+    if (!case_id || !nft_id || !chance) return res.status(400).json({ error: 'case_id, nft_id, chance required' });
+
+    const nft = await queryOne(`SELECT * FROM nft_templates WHERE id = ? AND is_active = 1`, [nft_id]);
+    if (!nft) return res.status(404).json({ error: 'NFT not found' });
+
+    const [result] = await query(
+      `INSERT INTO case_rewards (case_id, reward_type, name, image_url, value, rarity, chance) VALUES (?, 'nft', ?, ?, ?, ?, ?)`,
+      [case_id, nft.name, nft.image_url, nft.value, nft.rarity, chance]
+    );
+
+    await logAdminAction(req.user.id, 'attach_nft_to_case', 'case', case_id, { nft_id, reward_id: result.insertId });
+    res.json({ success: true, reward_id: result.insertId });
+  } catch (err) {
+    console.error('attachNftToCase error:', err);
+    res.status(500).json({ error: 'Failed to attach NFT to case' });
+  }
+}
+
+// ============================================================================
+//  PROMO CODES — Admin promo kod yaratadi (shart bilan, masalan min 10 stars)
+// ============================================================================
+async function getPromoCodes(req, res) {
+  try {
+    const promos = await query(
+      `SELECT p.*, c.name as case_name FROM promo_codes p JOIN cases c ON c.id = p.case_id ORDER BY p.created_at DESC`
+    );
+    res.json({ promo_codes: promos });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to load promo codes' });
+  }
+}
+
+async function createPromoCode(req, res) {
+  try {
+    const { code, case_id, requirement_type, requirement_value, max_uses } = req.body;
+    if (!case_id) return res.status(400).json({ error: 'case_id is required' });
+
+    const finalCode = (code && code.trim()
+      ? code.trim().toUpperCase()
+      : crypto.randomBytes(4).toString('hex').toUpperCase());
+
+    const [result] = await query(
+      `INSERT INTO promo_codes (code, case_id, requirement_type, requirement_value, max_uses) VALUES (?, ?, ?, ?, ?)`,
+      [finalCode, case_id, requirement_type || 'none', requirement_value || 0, max_uses || 0]
+    );
+
+    await logAdminAction(req.user.id, 'create_promo', 'promo_code', result.insertId, { code: finalCode, case_id });
+    res.json({ success: true, promo_id: result.insertId, code: finalCode });
+  } catch (err) {
+    console.error('createPromoCode error:', err);
+    if (String(err.message || '').includes('UNIQUE')) {
+      return res.status(400).json({ error: 'This promo code already exists' });
+    }
+    res.status(500).json({ error: 'Failed to create promo code' });
+  }
+}
+
+async function updatePromoCode(req, res) {
+  try {
+    const { id } = req.params;
+    const { requirement_type, requirement_value, max_uses, is_active } = req.body;
+    await query(
+      `UPDATE promo_codes SET requirement_type=?, requirement_value=?, max_uses=?, is_active=? WHERE id=?`,
+      [requirement_type || 'none', requirement_value || 0, max_uses || 0, is_active ? 1 : 0, id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update promo code' });
+  }
+}
+
+async function deletePromoCode(req, res) {
+  try {
+    const { id } = req.params;
+    await query(`UPDATE promo_codes SET is_active = 0 WHERE id = ?`, [id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete promo code' });
+  }
+}
+
+// ============================================================================
+//  BROADCAST STARS — Admin tomonidan barchaga stars tarqatish (sabab bilan)
+//  Talab: "admin tomonidan barchaga stars tarqatishniham qo'sh misol 5 va
+//  hammaga shu qo'shiladi va pastda reason ham yoziladi"
+// ============================================================================
+async function broadcastStars(req, res) {
+  try {
+    const { amount, reason } = req.body;
+    const starsAmount = parseFloat(amount);
+    if (!starsAmount || starsAmount <= 0) {
+      return res.status(400).json({ error: 'Valid stars amount is required' });
+    }
+    if (!reason || !String(reason).trim()) {
+      return res.status(400).json({ error: 'Reason is required' });
+    }
+
+    const users = await query(`SELECT id FROM users WHERE is_banned = 0`);
+
+    let credited = 0;
+    for (const u of users) {
+      try {
+        await transaction(async (conn) => {
+          const bal = await queryOne(`SELECT stars_balance FROM balances WHERE user_id = ?`, [u.id]);
+          const balBefore = parseFloat(bal?.stars_balance || 0);
+          const balAfter = balBefore + starsAmount;
+          await conn.execute(`UPDATE balances SET stars_balance = ? WHERE user_id = ?`, [balAfter, u.id]);
+          await conn.execute(
+            `INSERT INTO transactions (user_id, type, amount, balance_before, balance_after, notes) VALUES (?, 'deposit', ?, ?, ?, ?)`,
+            [u.id, starsAmount, balBefore, balAfter, `Admin gift: ${reason}`]
+          );
+        });
+        credited++;
+      } catch (e) {
+        console.error(`broadcastStars failed for user ${u.id}:`, e.message);
+      }
+    }
+
+    await logAdminAction(req.user.id, 'broadcast_stars', 'all_users', null, { amount: starsAmount, reason, credited });
+
+    // Telegram orqali xabar yuborish (best-effort, broadcast'dan keyin)
+    try {
+      const { getBot } = require('../services/bot');
+      const bot = getBot();
+      const message = `🎁 <b>Siz ${starsAmount} ⭐ Stars oldingiz!</b>\n\n📝 Sabab: ${reason}`;
+      for (const u of users) {
+        try {
+          await bot.telegram.sendMessage(u.id, message, { parse_mode: 'HTML' });
+          await new Promise(r => setTimeout(r, 40));
+        } catch (e) {}
+      }
+    } catch (e) {
+      console.error('broadcastStars notify error:', e.message);
+    }
+
+    res.json({ success: true, credited, total_users: users.length, amount: starsAmount, reason });
+  } catch (err) {
+    console.error('broadcastStars error:', err);
+    res.status(500).json({ error: 'Failed to broadcast stars' });
+  }
+}
+
 module.exports = {
   getDashboard, getUsers, banUser, unbanUser, getUserProfile, adjustBalance,
   getCases, createCase, updateCase, deleteCase,
@@ -531,80 +781,7 @@ module.exports = {
   getDeposits, approveDeposit, rejectDeposit,
   sendBroadcast, getBroadcastStatus, getBroadcasts,
   getSettings, updateSettings, getLogs,
-};
-
-// Promo code management
-async function getPromoCodes(req, res) {
-  try {
-    const codes = await query(
-      `SELECT p.*, c.name as case_name FROM promo_codes p LEFT JOIN cases c ON c.id = p.case_id ORDER BY p.created_at DESC LIMIT 100`
-    );
-    res.json({ promo_codes: codes });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to load promo codes' });
-  }
-}
-
-async function createPromoCode(req, res) {
-  try {
-    const { code, case_id, stars_required, max_uses, expires_at } = req.body;
-    if (!code || !case_id) return res.status(400).json({ error: 'Code and case_id required' });
-    const existing = await queryOne(`SELECT id FROM promo_codes WHERE UPPER(code) = UPPER(?)`, [code]);
-    if (existing) return res.status(400).json({ error: 'Code already exists' });
-    const [result] = await query(
-      `INSERT INTO promo_codes (code, case_id, stars_required, max_uses, created_by, expires_at) VALUES (UPPER(?), ?, ?, ?, ?, ?)`,
-      [code.trim(), case_id, stars_required || 0, max_uses || 0, req.user.id, expires_at || null]
-    );
-    await logAdminAction(req.user.id, 'create_promo', 'promo', result.insertId, { code, case_id });
-    res.json({ success: true, promo_id: result.insertId });
-  } catch (err) {
-    console.error('createPromoCode error:', err);
-    res.status(500).json({ error: 'Failed to create promo code' });
-  }
-}
-
-async function deletePromoCode(req, res) {
-  try {
-    const { id } = req.params;
-    await query(`UPDATE promo_codes SET is_active = 0 WHERE id = ?`, [id]);
-    await logAdminAction(req.user.id, 'delete_promo', 'promo', id, {});
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to delete promo code' });
-  }
-}
-
-// Broadcast stars to all users
-async function broadcastStars(req, res) {
-  try {
-    const { amount, reason } = req.body;
-    if (!amount || isNaN(amount) || parseFloat(amount) <= 0) return res.status(400).json({ error: 'Valid amount required' });
-    const stars = parseFloat(amount);
-    const users = await query(`SELECT id FROM users WHERE is_banned = 0`);
-    let credited = 0;
-    for (const user of users) {
-      try {
-        const bal = await queryOne(`SELECT stars_balance FROM balances WHERE user_id = ?`, [user.id]);
-        const balBefore = parseFloat(bal?.stars_balance || 0);
-        await query(`UPDATE balances SET stars_balance = stars_balance + ? WHERE user_id = ?`, [stars, user.id]);
-        await query(
-          `INSERT INTO transactions (user_id, type, amount, balance_before, balance_after, notes) VALUES (?, 'deposit', ?, ?, ?, ?)`,
-          [user.id, stars, balBefore, balBefore + stars, reason || `Admin bonus: +${stars} ⭐`]
-        );
-        credited++;
-      } catch {}
-    }
-    await logAdminAction(req.user.id, 'broadcast_stars', 'all', null, { amount: stars, reason, credited });
-    res.json({ success: true, credited, amount: stars });
-  } catch (err) {
-    console.error('broadcastStars error:', err);
-    res.status(500).json({ error: 'Failed to broadcast stars' });
-  }
-}
-
-// Export new functions added at module level
-const _origModule = module.exports;
-module.exports = {
-  ..._origModule,
-  getPromoCodes, createPromoCode, deletePromoCode, broadcastStars,
+  getNftLibrary, createNft, updateNft, deleteNft, attachNftToCase,
+  getPromoCodes, createPromoCode, updatePromoCode, deletePromoCode,
+  broadcastStars,
 };
