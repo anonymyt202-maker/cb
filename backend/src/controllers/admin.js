@@ -299,7 +299,7 @@ async function approveWithdrawal(req, res) {
         `UPDATE withdrawals SET status = 'approved', admin_id = ?, admin_notes = ?, processed_at = NOW() WHERE id = ? AND status = 'pending'`,
         [req.user.id, notes || '', id]
       );
-      const withdrawal = await queryOne(`SELECT inventory_id FROM withdrawals WHERE id = ?`, [id]);
+      const withdrawal = await conn.get(`SELECT inventory_id FROM withdrawals WHERE id = ?`, [id]);
       await conn.execute(`UPDATE inventory SET status = 'withdrawn' WHERE id = ?`, [withdrawal.inventory_id]);
       await conn.execute(
         `INSERT INTO inventory_history (inventory_id, user_id, action, notes) SELECT ?, user_id, 'withdrawn', 'Withdrawal approved by admin' FROM withdrawals WHERE id = ?`,
@@ -325,7 +325,7 @@ async function rejectWithdrawal(req, res) {
         `UPDATE withdrawals SET status = 'rejected', admin_id = ?, admin_notes = ?, processed_at = NOW() WHERE id = ? AND status = 'pending'`,
         [req.user.id, notes || '', id]
       );
-      const withdrawal = await queryOne(`SELECT inventory_id FROM withdrawals WHERE id = ?`, [id]);
+      const withdrawal = await conn.get(`SELECT inventory_id FROM withdrawals WHERE id = ?`, [id]);
       await conn.execute(`UPDATE inventory SET status = 'owned' WHERE id = ?`, [withdrawal.inventory_id]);
     });
     const { notifyUserWithdrawalRejected } = require('../services/bot');
@@ -373,8 +373,7 @@ async function approveDeposit(req, res) {
         [req.user.id, starsToCredit, id]
       );
       
-      const bal = await conn.all(`SELECT stars_balance FROM balances WHERE user_id = ?`, [deposit.user_id]);
-      const balData = Array.isArray(bal) ? bal[0] : bal;
+      const balData = await conn.get(`SELECT stars_balance FROM balances WHERE user_id = ?`, [deposit.user_id]);
       const balBefore = parseFloat(balData?.stars_balance || 0);
       
       console.log(`[approveDeposit] User ${deposit.user_id} balance before: ${balBefore}, adding ${starsToCredit}`);
@@ -519,7 +518,7 @@ async function adjustBalance(req, res) {
     const { amount, reason } = req.body;
     if (!amount || isNaN(amount)) return res.status(400).json({ error: 'Valid amount is required' });
     await transaction(async (conn) => {
-      const bal = await queryOne(`SELECT stars_balance FROM balances WHERE user_id = ?`, [id]);
+      const bal = await conn.get(`SELECT stars_balance FROM balances WHERE user_id = ?`, [id]);
       const balBefore = parseFloat(bal?.stars_balance || 0);
       const balAfter = Math.max(0, balBefore + parseFloat(amount));
       await conn.execute(`UPDATE balances SET stars_balance = ? WHERE user_id = ?`, [balAfter, id]);
@@ -734,7 +733,7 @@ async function broadcastStars(req, res) {
     for (const u of users) {
       try {
         await transaction(async (conn) => {
-          const bal = await queryOne(`SELECT stars_balance FROM balances WHERE user_id = ?`, [u.id]);
+          const bal = await conn.get(`SELECT stars_balance FROM balances WHERE user_id = ?`, [u.id]);
           const balBefore = parseFloat(bal?.stars_balance || 0);
           const balAfter = balBefore + starsAmount;
           await conn.execute(`UPDATE balances SET stars_balance = ? WHERE user_id = ?`, [balAfter, u.id]);

@@ -413,8 +413,7 @@ async function openDailyFreeCase(req, res, caseData) {
 
     let inventoryId = null;
     if (selectedReward.reward_type === 'stars') {
-      const bal = await conn.all(`SELECT stars_balance FROM balances WHERE user_id = ?`, [userId]);
-      const balData = Array.isArray(bal) ? bal[0] : bal;
+      const balData = await conn.get(`SELECT stars_balance FROM balances WHERE user_id = ?`, [userId]);
       const currentBalance = parseFloat(balData?.stars_balance || 0);
       const starsWon = parseFloat(selectedReward.stars_amount);
 
@@ -508,7 +507,7 @@ async function openReferralCase(req, res, caseData) {
 
     let inventoryId = null;
     if (selectedReward.reward_type === 'stars') {
-      const bal = await queryOne(`SELECT stars_balance FROM balances WHERE user_id = ?`, [userId]);
+      const bal = await conn.get(`SELECT stars_balance FROM balances WHERE user_id = ?`, [userId]);
       const starsWon = parseFloat(selectedReward.stars_amount);
       await conn.execute(
         `UPDATE balances SET stars_balance = stars_balance + ?, total_won = total_won + ? WHERE user_id = ?`,
@@ -666,7 +665,7 @@ async function openPromoCase(req, res) {
 
       let inventoryId = null;
       if (selectedReward.reward_type === 'stars') {
-        const bal = await queryOne(`SELECT stars_balance FROM balances WHERE user_id = ?`, [userId]);
+        const bal = await conn.get(`SELECT stars_balance FROM balances WHERE user_id = ?`, [userId]);
         const starsWon = parseFloat(selectedReward.stars_amount);
         await conn.execute(
           `UPDATE balances SET stars_balance = stars_balance + ?, total_won = total_won + ? WHERE user_id = ?`,

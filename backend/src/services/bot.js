@@ -233,7 +233,7 @@ async function setupBot() {
       const starsAmount = payment.total_amount;
       try {
         await transaction(async (conn) => {
-          const bal = await queryOne(`SELECT stars_balance FROM balances WHERE user_id = ?`, [userId]);
+          const bal = await conn.get(`SELECT stars_balance FROM balances WHERE user_id = ?`, [userId]);
           const balBefore = parseFloat(bal?.stars_balance || 0);
           await conn.execute(
             `INSERT INTO deposits (user_id, method, amount, stars_credited, telegram_payment_charge_id, status) VALUES (?, 'stars', ?, ?, ?, 'completed')`,
@@ -346,7 +346,7 @@ async function grantReferralReward(referrerId, referredUserId, ctx) {
       [referrer.id, referredUserId, rewardStars]
     );
     if (rewardStars > 0) {
-      const bal = await queryOne(`SELECT stars_balance FROM balances WHERE user_id = ?`, [referrer.id]);
+      const bal = await conn.get(`SELECT stars_balance FROM balances WHERE user_id = ?`, [referrer.id]);
       const balBefore = parseFloat(bal?.stars_balance || 0);
       await conn.execute(`UPDATE balances SET stars_balance = stars_balance + ? WHERE user_id = ?`, [rewardStars, referrer.id]);
       await conn.execute(

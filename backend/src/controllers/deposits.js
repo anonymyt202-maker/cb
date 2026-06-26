@@ -70,7 +70,7 @@ async function handleStarsPayment(req, res) {
       const starsAmount = total_amount; // Stars are in whole units
 
       await transaction(async (conn) => {
-        const bal = await queryOne(`SELECT stars_balance FROM balances WHERE user_id = ?`, [user_id]);
+        const bal = await conn.get(`SELECT stars_balance FROM balances WHERE user_id = ?`, [user_id]);
         const balBefore = parseFloat(bal?.stars_balance || 0);
 
         const [dep] = await conn.execute(

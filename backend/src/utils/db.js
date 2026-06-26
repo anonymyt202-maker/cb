@@ -402,8 +402,29 @@ async function queryOne(sql, params = []) {
 async function transaction(callback) {
   // SQLite transactionlar sinxron ishlaydi, lekin controllerlarimiz async/await ishlatadi.
   // Shu sabab BEGIN/COMMIT/ROLLBACK ni qo'lda boshqaramiz.
+  //
+  // MUHIM: ba'zi controllerlar (masalan daily-free case, admin deposit approve)
+  // transaction ichida mysql2-uslubidagi `conn.all(...)` chaqiruvini ishlatadi
+  // (bir nechta qator olish/select qilish uchun). Avvalgi versiyada fakeConn'da
+  // faqat `execute` bor edi, `all`/`get` yo'q edi — shu sababli "conn.all is not
+  // a function" xatosi chiqardi va case ochish / deposit approve каби muhim
+  // amallar BUTUNLAY ishlamay qolardi. Endi fakeConn barcha kerakli metodlarni
+  // taqdim etadi, shu jumladan eski (mysql2-uslubidagi) chaqiruvlar bilan ham
+  // moslashadi.
   const fakeConn = {
     execute: async (sql, params) => {
+      const res = await query(sql, params);
+      return [res];
+    },
+    // SELECT bilan bir nechta qator qaytaradigan chaqiruvlar uchun (mysql2 .all uslubi)
+    all: async (sql, params) => {
+      return query(sql, params);
+    },
+    // SELECT bilan bitta qator qaytaradigan chaqiruvlar uchun (mysql2 .get uslubi)
+    get: async (sql, params) => {
+      return queryOne(sql, params);
+    },
+    query: async (sql, params) => {
       const res = await query(sql, params);
       return [res];
     },

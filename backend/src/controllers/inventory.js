@@ -56,7 +56,7 @@ async function sellItem(req, res) {
     const sellValue = parseFloat(item.value);
 
     await transaction(async (conn) => {
-      const bal = await queryOne(`SELECT stars_balance FROM balances WHERE user_id = ?`, [userId]);
+      const bal = await conn.get(`SELECT stars_balance FROM balances WHERE user_id = ?`, [userId]);
       const balBefore = parseFloat(bal.stars_balance);
       const balAfter = balBefore + sellValue;
 

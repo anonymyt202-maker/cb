@@ -417,7 +417,7 @@ async function revealMinesCell(req, res) {
       // Barcha xavfsiz kataklar ochildi — avtomatik max yutuq
       const payout = Math.round(parseFloat(game.bet_amount) * multiplier * 100) / 100;
       const result = await transaction(async (conn) => {
-        const bal = await queryOne(`SELECT stars_balance FROM balances WHERE user_id = ?`, [userId]);
+        const bal = await conn.get(`SELECT stars_balance FROM balances WHERE user_id = ?`, [userId]);
         const balBefore = parseFloat(bal.stars_balance);
         const balAfter = balBefore + payout;
         await conn.execute(`UPDATE balances SET stars_balance = ?, total_won = total_won + ? WHERE user_id = ?`, [balAfter, payout, userId]);
@@ -482,7 +482,7 @@ async function cashoutMines(req, res) {
     const payout = Math.round(parseFloat(game.bet_amount) * multiplier * 100) / 100;
 
     const result = await transaction(async (conn) => {
-      const bal = await queryOne(`SELECT stars_balance FROM balances WHERE user_id = ?`, [userId]);
+      const bal = await conn.get(`SELECT stars_balance FROM balances WHERE user_id = ?`, [userId]);
       const balBefore = parseFloat(bal.stars_balance);
       const balAfter = balBefore + payout;
       await conn.execute(`UPDATE balances SET stars_balance = ?, total_won = total_won + ? WHERE user_id = ?`, [balAfter, payout, userId]);
